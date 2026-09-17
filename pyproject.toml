@@ -1,0 +1,18 @@
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[project]
+name = "screenshot_helper"
+version = "0.1.0"
+description = "Fast per-window screenshots on Windows (Windows Graphics Capture) as numpy arrays or PNG bytes"
+requires-python = ">=3.12"
+dependencies = ["numpy>=1.26"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pillow"]
+
+[tool.maturin]
+python-source = "python"
+module-name = "screenshot_helper._native"
+features = ["extension-module"]
