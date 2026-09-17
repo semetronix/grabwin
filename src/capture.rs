@@ -21,6 +21,23 @@ use crate::window::{self, Crop};
 const PIXEL_FORMAT: DirectXPixelFormat = DirectXPixelFormat::B8G8R8A8UIntNormalized;
 const POOL_FRAMES: i32 = 2;
 
+/// WGC delivers exactly one frame when a static window is resized, and none after
+/// `Direct3D11CaptureFramePool::Recreate` (verified empirically). That frame's surface has the
+/// *pool's* size, so it is only fully usable if the pool is already at least as large as the new
+/// content. The pool is therefore sized to the window's monitor (or the content, if larger), which
+/// makes every resize within the monitor usable immediately; only growth beyond the pool needs a
+/// recreate, after which the next grab may time out until the window repaints.
+fn pool_size_for(hwnd: isize, content: SizeInt32) -> SizeInt32 {
+    let (mon_w, mon_h) = match window::monitor_of(hwnd) {
+        Ok((_, (l, t, r, b))) => (r - l, b - t),
+        Err(_) => (0, 0),
+    };
+    SizeInt32 {
+        Width: content.Width.max(mon_w),
+        Height: content.Height.max(mon_h),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     OnDemand,
@@ -36,6 +53,9 @@ pub struct Options {
 }
 
 struct State {
+    /// Surface size of the frame pool; frames are only usable while content fits in it.
+    pool: (i32, i32),
+    /// Last seen `ContentSize`; `crop` is valid for this size.
     content: (i32, i32),
     crop: Crop,
     latest: Option<ID3D11Texture2D>,
@@ -59,6 +79,9 @@ struct Shared {
     state: Mutex<State>,
     cv: Condvar,
     closed: AtomicBool,
+    /// Last failure of the frame callback, surfaced by the next `grab_bgra`. The callback must never
+    /// log (pyo3-log takes the GIL), so this is its only way to report.
+    last_error: Mutex<Option<Error>>,
 }
 
 // SAFETY: `windows` 0.62 does not mark COM/WinRT interfaces Send/Sync. Everything held here is
@@ -81,7 +104,6 @@ pub struct Capture {
 
 // SAFETY: see `Shared`; the item/pool/session are free-threaded WinRT objects.
 unsafe impl Send for Capture {}
-unsafe impl Sync for Capture {}
 
 fn property_present(name: &str) -> bool {
     ApiInformation::IsPropertyPresent(
@@ -91,8 +113,13 @@ fn property_present(name: &str) -> bool {
     .unwrap_or(false)
 }
 
+/// Runs on the WGC worker thread. MUST NOT log or otherwise touch Python: a Python thread may be
+/// blocked on `state` while holding the GIL, and pyo3-log acquires the GIL to emit a record.
 fn on_frame(shared: &Shared, pool: &Direct3D11CaptureFramePool) -> Result<()> {
-    let frame = pool.TryGetNextFrame()?;
+    // A null frame (pool already drained) or a closed pool are not worth reporting.
+    let Ok(frame) = pool.TryGetNextFrame() else {
+        return Ok(());
+    };
     let size = frame.ContentSize()?;
     if size.Width <= 0 || size.Height <= 0 {
         return Ok(());
@@ -104,22 +131,32 @@ fn on_frame(shared: &Shared, pool: &Direct3D11CaptureFramePool) -> Result<()> {
     }
     let mut st = shared.state.lock().unwrap();
 
-    if (size.Width, size.Height) != st.content {
-        // The surface of this frame still has the old pool size: recreate and wait for the next one.
+    if size.Width > st.pool.0 || size.Height > st.pool.1 {
+        // Content outgrew the pool: this frame's surface holds only part of it. Recreate larger and
+        // drop the frame (see `pool_size_for` for why this is a last resort). Compute the new crop
+        // before touching anything so a failure leaves the state consistent.
         drop(frame);
-        pool.Recreate(&shared.d3d.winrt, PIXEL_FORMAT, POOL_FRAMES, size)?;
+        let crop = window::pick_crop(shared.hwnd, size.Width, size.Height)?;
+        let pool_size = pool_size_for(shared.hwnd, size);
+        pool.Recreate(&shared.d3d.winrt, PIXEL_FORMAT, POOL_FRAMES, pool_size)?;
+        st.pool = (pool_size.Width, pool_size.Height);
         st.content = (size.Width, size.Height);
-        st.crop = window::pick_crop(shared.hwnd, size.Width, size.Height)?;
+        st.crop = crop;
         st.latest = None;
         st.staging = None;
         st.latest_cpu = None;
-        log::debug!(
-            "frame pool recreated: {}x{}, crop {:?}",
-            size.Width,
-            size.Height,
-            st.crop
-        );
         return Ok(());
+    }
+
+    if (size.Width, size.Height) != st.content {
+        // Resized within the pool: the content sits at the surface's top-left, so this very frame
+        // is usable with a fresh crop; the cached textures have the old crop size.
+        let crop = window::pick_crop(shared.hwnd, size.Width, size.Height)?;
+        st.content = (size.Width, size.Height);
+        st.crop = crop;
+        st.latest = None;
+        st.staging = None;
+        st.latest_cpu = None;
     }
 
     let src = d3d::texture_from_surface(&frame.Surface()?)?;
@@ -170,6 +207,7 @@ fn on_frame(shared: &Shared, pool: &Direct3D11CaptureFramePool) -> Result<()> {
 }
 
 impl Capture {
+    /// Must be called without the GIL: it logs, and pyo3-log acquires the GIL to do so.
     pub fn start(hwnd: isize, opts: Options) -> Result<Self> {
         if !GraphicsCaptureSession::IsSupported().unwrap_or(false) {
             return Err(Error::Unsupported(
@@ -181,12 +219,23 @@ impl Capture {
         let item: GraphicsCaptureItem = unsafe { interop.CreateForWindow(window::hwnd(hwnd))? };
         let size: SizeInt32 = item.Size()?;
         let crop = window::pick_crop(hwnd, size.Width, size.Height)?;
+        let pool_size = pool_size_for(hwnd, size);
+        if log::log_enabled!(log::Level::Debug) {
+            log::debug!(
+                "crop for hwnd {hwnd}: {crop:?} (content {}x{}, pool {}x{}, geo {:?})",
+                size.Width,
+                size.Height,
+                pool_size.Width,
+                pool_size.Height,
+                window::geometry(hwnd)
+            );
+        }
 
         let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
             &d3d.winrt,
             PIXEL_FORMAT,
             POOL_FRAMES,
-            size,
+            pool_size,
         )?;
         let session = pool.CreateCaptureSession(&item)?;
 
@@ -195,6 +244,7 @@ impl Capture {
             d3d,
             mode: opts.mode,
             state: Mutex::new(State {
+                pool: (pool_size.Width, pool_size.Height),
                 content: (size.Width, size.Height),
                 crop,
                 latest: None,
@@ -203,8 +253,10 @@ impl Capture {
             }),
             cv: Condvar::new(),
             closed: AtomicBool::new(false),
+            last_error: Mutex::new(None),
         });
 
+        // Neither handler may log or touch Python (see `on_frame`).
         let frame_token = pool.FrameArrived(&TypedEventHandler::<
             Direct3D11CaptureFramePool,
             IInspectable,
@@ -213,7 +265,8 @@ impl Capture {
             move |pool, _| {
                 if let Some(pool) = pool.as_ref() {
                     if let Err(e) = on_frame(&shared, pool) {
-                        log::error!("frame handler failed: {e}");
+                        *shared.last_error.lock().unwrap() = Some(e);
+                        shared.cv.notify_all();
                     }
                 }
                 Ok(())
@@ -224,7 +277,6 @@ impl Capture {
             &TypedEventHandler::<GraphicsCaptureItem, IInspectable>::new({
                 let shared = shared.clone();
                 move |_, _| {
-                    log::debug!("capture item closed");
                     shared.closed.store(true, Ordering::SeqCst);
                     shared.cv.notify_all();
                     Ok(())
@@ -260,10 +312,6 @@ impl Capture {
         self.stopped || self.shared.closed.load(Ordering::SeqCst)
     }
 
-    pub fn hwnd(&self) -> isize {
-        self.shared.hwnd
-    }
-
     pub fn size(&self) -> (u32, u32) {
         let st = self.shared.state.lock().unwrap();
         (st.crop.width, st.crop.height)
@@ -277,11 +325,17 @@ impl Capture {
         if self.is_closed() || !window::is_alive(sh.hwnd) {
             return Err(Error::Closed);
         }
+        if let Some(e) = sh.last_error.lock().unwrap().take() {
+            return Err(e);
+        }
         let deadline = Instant::now() + Duration::from_millis(self.timeout_ms as u64);
         let mut st = sh.state.lock().unwrap();
         while !st.has_frame(sh.mode) {
             if sh.closed.load(Ordering::SeqCst) {
                 return Err(Error::Closed);
+            }
+            if let Some(e) = sh.last_error.lock().unwrap().take() {
+                return Err(e);
             }
             if window::is_minimized(sh.hwnd) {
                 return Err(Error::Minimized);
@@ -311,6 +365,7 @@ impl Capture {
         })
     }
 
+    /// Safe to call with the GIL held (Python dealloc path): it never logs or blocks on Python.
     pub fn close(&mut self) {
         if self.stopped {
             return;

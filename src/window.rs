@@ -264,7 +264,7 @@ pub fn geometry(h: isize) -> Result<Geometry> {
 }
 
 /// Chooses the frame origin (GetWindowRect vs DWM extended bounds) by matching the WGC content
-/// size, then returns the client-area crop clamped to the content. Pure; unit-tested.
+/// size, then returns the client-area crop clamped to the content. Pure; unit-tested. Never logs.
 pub fn crop_for(geo: &Geometry, content_w: i32, content_h: i32) -> Crop {
     let win_size = (geo.window.2 - geo.window.0, geo.window.3 - geo.window.1);
     let ext_size = (
@@ -276,9 +276,8 @@ pub fn crop_for(geo: &Geometry, content_w: i32, content_h: i32) -> Crop {
     } else if (content_w, content_h) == ext_size {
         (geo.extended.0, geo.extended.1)
     } else {
-        log::debug!(
-            "content {content_w}x{content_h} matches neither GetWindowRect {win_size:?} nor DWM bounds {ext_size:?}; using GetWindowRect origin"
-        );
+        // Matches neither; fall back to the GetWindowRect origin. (No logging here: this runs on
+        // the WGC callback thread, and pyo3-log would take the GIL.)
         (geo.window.0, geo.window.1)
     };
     let x = (geo.client_origin.0 - origin.0).clamp(0, (content_w - 1).max(0));
@@ -293,11 +292,10 @@ pub fn crop_for(geo: &Geometry, content_w: i32, content_h: i32) -> Crop {
     }
 }
 
+/// Called from the WGC frame callback (with the capture state locked), so it must never log:
+/// pyo3-log acquires the GIL, which a Python thread waiting on that lock may be holding.
 pub fn pick_crop(h: isize, content_w: i32, content_h: i32) -> Result<Crop> {
-    let geo = geometry(h)?;
-    let crop = crop_for(&geo, content_w, content_h);
-    log::debug!("crop for hwnd {h}: {crop:?} (content {content_w}x{content_h}, geo {geo:?})");
-    Ok(crop)
+    Ok(crop_for(&geometry(h)?, content_w, content_h))
 }
 
 /// Returns the HMONITOR (as isize) and its rect for the monitor nearest to the window.

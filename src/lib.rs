@@ -67,12 +67,23 @@ pub struct WindowCapture {
     mode: &'static str,
 }
 
+// Every acquisition of `inner` (and, through it, of the capture state) from Python happens under
+// `py.detach`: the WGC callback holds the capture state while it runs, and blocking on it with the
+// GIL held would stall every other Python thread for the duration of a frame. The callback itself
+// never touches Python (see `capture::on_frame`), which is what keeps the dealloc path (`Drop` with
+// the GIL held) safe.
 impl WindowCapture {
     fn with_capture<T>(&self, f: impl FnOnce(&Capture) -> Result<T>) -> Result<T> {
         let guard = self.inner.lock().unwrap();
         match guard.as_ref() {
             Some(cap) => f(cap),
             None => Err(Error::Closed),
+        }
+    }
+
+    fn close_inner(&self) {
+        if let Some(mut cap) = self.inner.lock().unwrap().take() {
+            cap.close();
         }
     }
 }
@@ -117,14 +128,16 @@ impl WindowCapture {
     }
 
     #[getter]
-    fn size(&self) -> PyResult<(u32, u32)> {
-        Ok(self.with_capture(|c| Ok(c.size()))?)
+    fn size(&self, py: Python<'_>) -> PyResult<(u32, u32)> {
+        Ok(py.detach(|| self.with_capture(|c| Ok(c.size())))?)
     }
 
     #[getter]
-    fn is_alive(&self) -> bool {
-        let guard = self.inner.lock().unwrap();
-        matches!(guard.as_ref(), Some(c) if !c.is_closed()) && window::is_alive(self.hwnd)
+    fn is_alive(&self, py: Python<'_>) -> bool {
+        py.detach(|| {
+            let guard = self.inner.lock().unwrap();
+            matches!(guard.as_ref(), Some(c) if !c.is_closed()) && window::is_alive(self.hwnd)
+        })
     }
 
     /// Returns (bgra_bytes, width, height).
@@ -133,10 +146,8 @@ impl WindowCapture {
         Ok((PyBytes::new(py, &frame.bgra), frame.width, frame.height))
     }
 
-    fn close(&self) {
-        if let Some(mut cap) = self.inner.lock().unwrap().take() {
-            cap.close();
-        }
+    fn close(&self, py: Python<'_>) {
+        py.detach(|| self.close_inner());
     }
 
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -144,8 +155,8 @@ impl WindowCapture {
     }
 
     #[pyo3(signature = (*_args))]
-    fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
-        self.close();
+    fn __exit__(&self, py: Python<'_>, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
+        py.detach(|| self.close_inner());
         false
     }
 }
