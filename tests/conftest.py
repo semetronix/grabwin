@@ -62,6 +62,7 @@ class TkWin:
                 self.proc.wait(timeout=3)
             except Exception:
                 self.proc.kill()
+                self.proc.wait()
 
 
 @pytest.fixture
@@ -72,6 +73,11 @@ def tk_window():
         stdin=subprocess.PIPE,
         text=True,
     )
-    win = TkWin(proc, title)
+    try:
+        win = TkWin(proc, title)
+    except BaseException:
+        proc.kill()
+        proc.wait()
+        raise
     yield win
     win.close()
