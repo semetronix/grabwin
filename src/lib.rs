@@ -1,5 +1,6 @@
 mod error;
 mod frame;
+mod pngenc;
 
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
