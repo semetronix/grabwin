@@ -1,12 +1,19 @@
 mod error;
 mod frame;
 mod pngenc;
+mod window;
 
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 
 pub use error::{Error, Result};
+pub use window::WindowInfo;
+
+#[pyfunction]
+fn list_windows() -> Vec<WindowInfo> {
+    window::list_windows()
+}
 
 create_exception!(screenshot_helper, CaptureError, PyException);
 create_exception!(screenshot_helper, WindowNotFoundError, CaptureError);
@@ -47,5 +54,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "CaptureUnsupportedError",
         py.get_type::<CaptureUnsupportedError>(),
     )?;
+    m.add_class::<WindowInfo>()?;
+    m.add_function(wrap_pyfunction!(list_windows, m)?)?;
     Ok(())
 }
