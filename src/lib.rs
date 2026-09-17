@@ -88,6 +88,14 @@ impl WindowCapture {
             cap.close();
         }
     }
+
+    /// Grabs the current frame and PNG-encodes it. Callers run this inside `py.detach` (and, for
+    /// `save_png`, alongside the subsequent file write) so the GIL is never held across the capture
+    /// or the encode.
+    fn encode_current_png(&self, compression: u8) -> Result<Vec<u8>> {
+        let frame = self.with_capture(|c| c.grab_bgra())?;
+        pngenc::encode_png(&frame.bgra, frame.width, frame.height, compression)
+    }
 }
 
 #[pymethods]
@@ -177,21 +185,17 @@ impl WindowCapture {
     /// PNG bytes (RGB, alpha dropped). compression 0..=9, default 1 (fast).
     #[pyo3(signature = (compression = 1))]
     fn grab_png<'py>(&self, py: Python<'py>, compression: u8) -> PyResult<Bound<'py, PyBytes>> {
-        let data = py.detach(|| -> Result<Vec<u8>> {
-            let frame = self.with_capture(|c| c.grab_bgra())?;
-            pngenc::encode_png(&frame.bgra, frame.width, frame.height, compression)
-        })?;
+        let data = py.detach(|| self.encode_current_png(compression))?;
         Ok(PyBytes::new(py, &data))
     }
 
     #[pyo3(signature = (path, compression = 1))]
     fn save_png(&self, py: Python<'_>, path: std::path::PathBuf, compression: u8) -> PyResult<()> {
-        let data = py.detach(|| -> Result<Vec<u8>> {
-            let frame = self.with_capture(|c| c.grab_bgra())?;
-            pngenc::encode_png(&frame.bgra, frame.width, frame.height, compression)
-        })?;
-        std::fs::write(&path, data)?;
-        Ok(())
+        py.detach(|| -> PyResult<()> {
+            let data = self.encode_current_png(compression)?;
+            std::fs::write(&path, data)?;
+            Ok(())
+        })
     }
 
     fn close(&self, py: Python<'_>) {
