@@ -1,11 +1,19 @@
+mod capture;
+mod d3d;
 mod error;
 mod frame;
 mod pngenc;
 mod window;
 
+use std::sync::Mutex;
+
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
+
+use capture::{Capture, Mode, Options};
+use window::Selector;
 
 pub use error::{Error, Result};
 pub use window::WindowInfo;
@@ -37,6 +45,111 @@ impl From<Error> for PyErr {
     }
 }
 
+fn selector_from_args(
+    hwnd: Option<isize>,
+    title: Option<String>,
+    process: Option<String>,
+) -> PyResult<Selector> {
+    match (hwnd, title, process) {
+        (Some(h), None, None) => Ok(Selector::Hwnd(h)),
+        (None, Some(t), None) => Ok(Selector::Title(t)),
+        (None, None, Some(p)) => Ok(Selector::Process(p)),
+        _ => Err(pyo3::exceptions::PyValueError::new_err(
+            "exactly one of hwnd, title or process must be given",
+        )),
+    }
+}
+
+#[pyclass(module = "screenshot_helper")]
+pub struct WindowCapture {
+    inner: Mutex<Option<Capture>>,
+    hwnd: isize,
+    mode: &'static str,
+}
+
+impl WindowCapture {
+    fn with_capture<T>(&self, f: impl FnOnce(&Capture) -> Result<T>) -> Result<T> {
+        let guard = self.inner.lock().unwrap();
+        match guard.as_ref() {
+            Some(cap) => f(cap),
+            None => Err(Error::Closed),
+        }
+    }
+}
+
+#[pymethods]
+impl WindowCapture {
+    #[new]
+    #[pyo3(signature = (hwnd=None, title=None, process=None, timeout_ms=250))]
+    fn new(
+        py: Python<'_>,
+        hwnd: Option<isize>,
+        title: Option<String>,
+        process: Option<String>,
+        timeout_ms: u32,
+    ) -> PyResult<Self> {
+        let sel = selector_from_args(hwnd, title, process)?;
+        let opts = Options {
+            mode: Mode::OnDemand,
+            timeout_ms,
+            cursor: false,
+            border: false,
+        };
+        let (cap, hwnd) = py.detach(|| -> Result<(Capture, isize)> {
+            let info = window::find_window(&sel)?;
+            Ok((Capture::start(info.hwnd, opts)?, info.hwnd))
+        })?;
+        Ok(Self {
+            inner: Mutex::new(Some(cap)),
+            hwnd,
+            mode: "on_demand",
+        })
+    }
+
+    #[getter]
+    fn hwnd(&self) -> isize {
+        self.hwnd
+    }
+
+    #[getter]
+    fn mode(&self) -> &'static str {
+        self.mode
+    }
+
+    #[getter]
+    fn size(&self) -> PyResult<(u32, u32)> {
+        Ok(self.with_capture(|c| Ok(c.size()))?)
+    }
+
+    #[getter]
+    fn is_alive(&self) -> bool {
+        let guard = self.inner.lock().unwrap();
+        matches!(guard.as_ref(), Some(c) if !c.is_closed()) && window::is_alive(self.hwnd)
+    }
+
+    /// Returns (bgra_bytes, width, height).
+    fn grab_raw<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyBytes>, u32, u32)> {
+        let frame = py.detach(|| self.with_capture(|c| c.grab_bgra()))?;
+        Ok((PyBytes::new(py, &frame.bgra), frame.width, frame.height))
+    }
+
+    fn close(&self) {
+        if let Some(mut cap) = self.inner.lock().unwrap().take() {
+            cap.close();
+        }
+    }
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    #[pyo3(signature = (*_args))]
+    fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
+        self.close();
+        false
+    }
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let _ = pyo3_log::try_init();
@@ -55,6 +168,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
         py.get_type::<CaptureUnsupportedError>(),
     )?;
     m.add_class::<WindowInfo>()?;
+    m.add_class::<WindowCapture>()?;
     m.add_function(wrap_pyfunction!(list_windows, m)?)?;
     Ok(())
 }
