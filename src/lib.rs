@@ -7,12 +7,14 @@ mod window;
 
 use std::sync::Mutex;
 
+use numpy::{IntoPyArray, PyArray3, PyArrayMethods};
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
 use capture::{Capture, Mode, Options};
+use frame::PixelFormat;
 use window::Selector;
 
 pub use error::{Error, Result};
@@ -144,6 +146,40 @@ impl WindowCapture {
     fn grab_raw<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyBytes>, u32, u32)> {
         let frame = py.detach(|| self.with_capture(|c| c.grab_bgra()))?;
         Ok((PyBytes::new(py, &frame.bgra), frame.width, frame.height))
+    }
+
+    /// numpy array (h, w, c), uint8. format: "bgra" (default), "rgba", "rgb", "bgr".
+    #[pyo3(signature = (format = "bgra"))]
+    fn grab<'py>(&self, py: Python<'py>, format: &str) -> PyResult<Bound<'py, PyArray3<u8>>> {
+        let fmt = PixelFormat::parse(format)?;
+        let (data, w, h) = py.detach(|| -> Result<(Vec<u8>, u32, u32)> {
+            let frame = self.with_capture(|c| c.grab_bgra())?;
+            Ok((frame.to_format(fmt), frame.width, frame.height))
+        })?;
+        let arr = data
+            .into_pyarray(py)
+            .reshape([h as usize, w as usize, fmt.channels()])?;
+        Ok(arr)
+    }
+
+    /// PNG bytes (RGB, alpha dropped). compression 0..=9, default 1 (fast).
+    #[pyo3(signature = (compression = 1))]
+    fn grab_png<'py>(&self, py: Python<'py>, compression: u8) -> PyResult<Bound<'py, PyBytes>> {
+        let data = py.detach(|| -> Result<Vec<u8>> {
+            let frame = self.with_capture(|c| c.grab_bgra())?;
+            pngenc::encode_png(&frame.bgra, frame.width, frame.height, compression)
+        })?;
+        Ok(PyBytes::new(py, &data))
+    }
+
+    #[pyo3(signature = (path, compression = 1))]
+    fn save_png(&self, py: Python<'_>, path: std::path::PathBuf, compression: u8) -> PyResult<()> {
+        let data = py.detach(|| -> Result<Vec<u8>> {
+            let frame = self.with_capture(|c| c.grab_bgra())?;
+            pngenc::encode_png(&frame.bgra, frame.width, frame.height, compression)
+        })?;
+        std::fs::write(&path, data)?;
+        Ok(())
     }
 
     fn close(&self, py: Python<'_>) {
