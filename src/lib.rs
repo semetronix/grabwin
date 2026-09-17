@@ -93,20 +93,32 @@ impl WindowCapture {
 #[pymethods]
 impl WindowCapture {
     #[new]
-    #[pyo3(signature = (hwnd=None, title=None, process=None, timeout_ms=250))]
+    #[pyo3(signature = (hwnd=None, title=None, process=None, mode="on_demand", cursor=false, border=false, timeout_ms=250))]
     fn new(
         py: Python<'_>,
         hwnd: Option<isize>,
         title: Option<String>,
         process: Option<String>,
+        mode: &str,
+        cursor: bool,
+        border: bool,
         timeout_ms: u32,
     ) -> PyResult<Self> {
         let sel = selector_from_args(hwnd, title, process)?;
+        let (mode_enum, mode_name) = match mode {
+            "on_demand" => (Mode::OnDemand, "on_demand"),
+            "live" => (Mode::Live, "live"),
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "mode must be \"on_demand\" or \"live\", got {other:?}"
+                )))
+            }
+        };
         let opts = Options {
-            mode: Mode::OnDemand,
+            mode: mode_enum,
             timeout_ms,
-            cursor: false,
-            border: false,
+            cursor,
+            border,
         };
         let (cap, hwnd) = py.detach(|| -> Result<(Capture, isize)> {
             let info = window::find_window(&sel)?;
@@ -115,7 +127,7 @@ impl WindowCapture {
         Ok(Self {
             inner: Mutex::new(Some(cap)),
             hwnd,
-            mode: "on_demand",
+            mode: mode_name,
         })
     }
 
