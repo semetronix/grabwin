@@ -6,6 +6,7 @@ build-backend = "maturin"
 name = "screenshot_helper"
 version = "0.1.0"
 description = "Fast per-window screenshots on Windows (Windows Graphics Capture) as numpy arrays or PNG bytes"
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = ["numpy>=1.26"]
 

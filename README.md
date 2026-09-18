@@ -1,50 +1,97 @@
 # screenshot_helper
 
-Быстрые снимки **клиентской области окна** на Windows через Windows Graphics Capture.
-Работает с играми (DirectX/Vulkan/OpenGL) и аппаратно-ускоренными окнами (браузеры),
-не зависит от вендора видеокарты. Windows 10 1903+.
+**English** | [Русский](README.ru.md)
 
-## Требования
+Fast screenshots of a **window's client area** on Windows via Windows Graphics Capture.
+Works with games (DirectX/Vulkan/OpenGL) and hardware-accelerated windows (browsers),
+independent of the GPU vendor. Windows 10 1903+.
 
-- Python 3.12–3.14 (расширение собрано как `abi3-py312`), `numpy`.
-- Для разработки: `maturin`, `pytest`, `pillow`.
+Frames come back as a `numpy` array or as PNG `bytes`, in a few milliseconds.
 
-## Установка
+## Requirements
+
+- Windows 10 1903 (build 18362) or newer.
+- Python 3.12–3.14 (the extension is built as `abi3-py312`), `numpy`.
+- For development: Rust toolchain (stable, MSVC), `maturin`, `pytest`, `pillow`.
+
+## Installation
+
+From source (Rust toolchain required):
 
 ```powershell
 pip install maturin
-maturin develop --release        # или: maturin build --release -> dist/*.whl
+maturin develop --release        # or: maturin build --release -> dist/*.whl
 ```
 
-## Использование
+## Usage
 
 ```python
 import screenshot_helper as sh
 
+# List capturable windows (visible, titled, top-level)
 for w in sh.list_windows():
-    print(w)
+    print(w)          # WindowInfo(hwnd=..., title=..., process="chrome.exe", pid=..., width=..., height=..., is_minimized=False)
 
-with sh.WindowCapture(process="chrome.exe") as cap:      # или title="...", hwnd=...
-    arr = cap.grab()            # numpy (h, w, 4) BGRA uint8
-    rgb = cap.grab("rgb")       # (h, w, 3)
-    png = cap.grab_png()        # bytes, RGB
+# Capture by process name (or title="..." / hwnd=...)
+with sh.WindowCapture(process="chrome.exe") as cap:
+    arr = cap.grab()            # numpy uint8, shape (h, w, 4), BGRA
+    rgb = cap.grab("rgb")       # shape (h, w, 3)
+    png = cap.grab_png()        # bytes, RGB PNG
     cap.save_png("shot.png")
+    data, w, h = cap.grab_raw() # (bytes BGRA, width, height) — no numpy needed
 
-# Бот, снимающий много раз в секунду:
+# A bot grabbing frames many times per second:
 with sh.WindowCapture(title="Game", mode="live") as cap:
-    frame = cap.grab("bgr")
+    while True:
+        frame = cap.grab("bgr")   # ~1 ms
+        ...
 ```
 
-Параметры `WindowCapture`: `hwnd` | `title` (подстрока, без учёта регистра) | `process` ("game.exe"),
-`mode="on_demand"|"live"`, `cursor=False`, `border=False`, `timeout_ms=250`.
+### `WindowCapture(...)` parameters
 
-Исключения: `CaptureError` ← `WindowNotFoundError`, `WindowClosedError`, `WindowMinimizedError`,
-`CaptureTimeoutError`, `CaptureUnsupportedError`.
+| Parameter | Default | Meaning |
+|---|---|---|
+| `hwnd` | `None` | Window handle. Exactly one of `hwnd` / `title` / `process` must be given. |
+| `title` | `None` | Case-insensitive substring of the window title; the first visible top-level match wins. |
+| `process` | `None` | Executable name, e.g. `"game.exe"` (case-insensitive); the largest visible window of that process. |
+| `mode` | `"on_demand"` | `"on_demand"` — the frame is read from the GPU only when you call `grab*()` (near-zero idle cost). `"live"` — every frame is read back in the background, `grab()` is a memory copy (~1 ms) at the cost of ~10–20 % of one CPU core. |
+| `cursor` | `False` | Draw the mouse cursor into the frame. |
+| `border` | `False` | Keep the capture border inside the frame. |
+| `timeout_ms` | `250` | How long `grab*()` waits for the first frame. |
 
-## Производительность (замерено `examples/bench.py`)
+### Methods and properties
 
-Замер: Microsoft Edge, окно 1249x1364 (страница youtube.com), после коммита
-`perf: avoid a second frame copy in grab()`.
+- `grab(format="bgra")` → `numpy.ndarray`, `uint8`, C-contiguous. Formats: `"bgra"`, `"rgba"` (shape `(h, w, 4)`), `"rgb"`, `"bgr"` (shape `(h, w, 3)`). The array owns its buffer — keep it as long as you like.
+- `grab_png(compression=1)` → `bytes`. RGB PNG, alpha dropped. `0` = stored (fastest, largest), `1` = fast (default), `2–5` = balanced, `6–9` = high.
+- `save_png(path, compression=1)` — `grab_png()` written to a file.
+- `grab_raw()` → `(bytes, width, height)` — tightly packed BGRA.
+- `size` → `(width, height)` of the client area (updates after a resize).
+- `hwnd`, `mode`, `target` (`"window"` or `"monitor"`, see below), `is_alive`.
+- `close()` — stop the capture session; idempotent. Also a context manager (`with ...`).
+
+All `grab*()` calls release the GIL while waiting, reading back and encoding, so other Python threads keep running.
+
+### Exceptions
+
+All derive from `screenshot_helper.CaptureError`:
+
+| Exception | When |
+|---|---|
+| `WindowNotFoundError` | The selector matched no window. |
+| `WindowClosedError` | The window was closed (or `close()` was called). |
+| `WindowMinimizedError` | The window is minimized and no frame is buffered yet. |
+| `CaptureTimeoutError` | No frame arrived within `timeout_ms`. |
+| `CaptureUnsupportedError` | Windows Graphics Capture is unavailable (Windows < 10 1903). |
+
+`ValueError` is raised for bad arguments (unknown format, two selectors at once, `compression > 9`).
+
+### Logging
+
+The Rust core logs through Python's `logging` module (logger `screenshot_helper`, level `DEBUG` for session details such as the computed crop and fullscreen fallback). Configure `logging` **before** the first capture call — log levels are cached on first use.
+
+## Performance
+
+Measured with `examples/bench.py` on Microsoft Edge (youtube.com), window 1249×1364:
 
 ```
 [on_demand] window 1249x1364, target=window
@@ -68,63 +115,42 @@ grab_png(compression=9)      median  28.26 ms   p95  30.18 ms
 png size @1: 127 KiB
 ```
 
-Цели из спеки (§5) при ~1080p: `grab()` on_demand ≤ 5 мс, live ≤ 2 мс, `grab_png(1)` ≤ 25 мс.
+- `grab()` for `bgra`/`rgba` hands the readback buffer to numpy without a second copy (`rgba` swaps channels in place). `rgb`/`bgr` allocate a 3-channel copy.
+- `grab_raw()` costs one extra copy: `bytes` cannot take over an existing buffer.
 
-- `grab()` on_demand (1.29 мс), live (1.11 мс) и `grab_png(1)` (4.52 мс on_demand / 4.49 мс live) —
-  все цели выполнены с запасом.
-- `grab()` для `bgra`/`rgba` отдаёт буфер readback'а в numpy без второй копии (`rgba` —
-  перестановка каналов на месте); до этого `grab()` стоил столько же, сколько `grab_raw()`
-  (2.50 / 2.29 мс), где вторая копия ~9.4 МБ неизбежна из-за `bytes`.
-- `grab_raw()` (2.45 / 2.29 мс) остаётся на уровне «readback + копия в `bytes`»: `PyBytes`
-  не может принять готовый `Vec<u8>` без копирования.
+Run it yourself: `python examples/bench.py --title "Chrome"` (or `--process chrome.exe`, `--hwnd N`), `--iters N`.
 
-## Архитектура и особенности реализации
+## How it works
 
-- Пул кадров WGC создаётся размером `max(размер окна, размер монитора)`: изменение размера окна
-  в пределах монитора подхватывается уже на следующем `grab()`; пересоздание пула (и ожидание
-  перерисовки окна) требуется только при росте окна за границы монитора. Цена — две
-  GPU-поверхности размером с монитор на каждый `WindowCapture` (~16 МБ на 1080p).
-- На каждый `WindowCapture` создаётся отдельное устройство D3D11 (не одно на процесс).
-- Обрезка по клиентской области проверена на Windows 11: кадр от WGC совпадает с расширенными
-  границами DWM (`DwmGetWindowAttribute(..., DWMWA_EXTENDED_FRAME_BOUNDS, ...)`), невидимых рамок
-  ресайза в кадре нет.
-- Fallback для exclusive-fullscreen: `cap.target` равен `"window"` или `"monitor"`; при переходе
-  окна в исключительный полноэкранный режим захват переключается на монитор. Путь через
-  `"monitor"` не покрыт автоматическими тестами — только ручной проверкой (см. ниже).
+- The window is captured by the compositor into a GPU texture (Windows Graphics Capture). Every frame is cropped to the client area on the GPU; the expensive GPU→CPU readback happens only when needed (`on_demand`) or in the background (`live`).
+- The frame pool is sized to `max(window, monitor)`, so a resize within the monitor is reflected on the very next `grab()`; only growing beyond the monitor recreates the pool and waits for the window to repaint. Cost: two monitor-sized GPU surfaces per `WindowCapture` (~16 MB at 1080p).
+- Each `WindowCapture` owns its own D3D11 device.
+- Client-area cropping was verified on Windows 11: the captured frame equals the DWM extended frame bounds (no invisible resize borders).
+- Client size is measured in physical pixels, so DPI-unaware target windows on scaled monitors (125–150 %) are cropped correctly.
+- Exclusive-fullscreen fallback: if a monitor-sized window yields no frames, the capture switches to the monitor; `cap.target` is `"window"` or `"monitor"`.
 
-## Ограничения
+## Limitations and known behaviour
 
-- Свёрнутое окно не рендерится системой: отдаётся последний буферизованный кадр, иначе `WindowMinimizedError`.
-- В режиме `live` фоновый readback каждого кадра стоит ~10–20 % одного ядра.
-- Exclusive-fullscreen игры захватываются через монитор (`cap.target == "monitor"`), в кадр попадают оверлеи.
-- Windows 11 скругляет нижние углы окон верхнего уровня: в `grab()`/`grab_png()` эти угловые
-  пиксели приходят полупрозрачными (в `bgra`/`rgba` — с не-255 альфой) или подмешанными к фону
-  (в PNG после отбрасывания альфы — не строго тем цветом, что за окном). Известное поведение
-  Windows 11, не баг библиотеки.
-- Жёлтая рамка захвата (Windows 11 показывает её вокруг захватываемого окна при активном WGC-сеансе,
-  даже при `border=False`, который управляет только рамкой *внутри* самого кадра): достоверно
-  подтвердить/опровергнуть её появление на экране в этой сессии не удалось (см. «Проверено на»,
-  п. 4) — окружение не позволило надёжно совместить полноэкранный снимок рабочего стола с активным
-  окном `live`-захвата. Если рамка видна на непакетированных (unpackaged) приложениях, её отключение
-  требует `GraphicsCaptureAccess.RequestAccessAsync` — отдельная задача.
+- A minimized window is not rendered by Windows: you get the last buffered frame, or `WindowMinimizedError` if there is none yet.
+- `live` mode reads back every frame in the background — ~10–20 % of one CPU core.
+- Exclusive-fullscreen games are captured through the monitor (`cap.target == "monitor"`); overlays on top of the game end up in the frame.
+- Windows 11 rounds the bottom corners of top-level windows: those corner pixels come back semi-transparent (`bgra`/`rgba` alpha < 255) or blended (PNG). This is Windows behaviour, not a bug.
+- Windows 11 may show a yellow capture border around the captured window on unpackaged apps regardless of `border=False` (which only controls the border *inside* the frame). Not reliably verified yet; if it appears, disabling it needs `GraphicsCaptureAccess.RequestAccessAsync` — a planned follow-up.
+- `title`/`process` are resolved once in the constructor. If the target restarts, create a new `WindowCapture`.
 
-## Проверено на
+## Verified on
 
-1. **Браузер (Microsoft Edge, youtube.com, окно 1249x1364)** — подтверждено: `save_png()` дал
-   PNG без заголовка/рамки окна, содержимое не чёрное, кадр актуален (видна реальная страница
-   YouTube на момент снимка). `cap.target == "window"`.
-2. **Игра в borderless/windowed** — ожидает ручной проверки (нужно физически запустить игру).
-3. **Та же игра в exclusive fullscreen** — ожидает ручной проверки.
-4. **Жёлтая рамка захвата вокруг окна при `border=False`** — не подтверждено достоверно: два
-   снимка всего экрана, сделанные во время активного `mode="live"`-захвата Edge, рамки не
-   показали, но совпадение снимка по времени с активным WGC-сеансом не гарантировано в этом
-   окружении. Требует ручной перепроверки пользователем.
+1. **Browser (Microsoft Edge, youtube.com, 1249×1364)** — confirmed: `save_png()` produced a PNG without title bar/frame, content not black, frame current. `cap.target == "window"`.
+2. **A game in borderless/windowed mode** — pending manual check.
+3. **The same game in exclusive fullscreen** — pending manual check.
+4. **Monitor scaled to 125–150 %** — pending manual check (the code path is covered by a test that passes trivially at 100 %).
+5. **Yellow capture border with `border=False`** — not reliably verified.
 
-## Разработка
+## Development
 
 ```powershell
-cargo test                       # unit-тесты Rust
-python -m pytest                 # интеграционные (создают окна); SH_NO_GUI=1 чтобы пропустить
+cargo test                       # Rust unit tests
+python -m pytest                 # integration tests (they open real windows); SH_NO_GUI=1 to skip
 ```
 
-Бенчмарк: `python examples/bench.py --title "Chrome"` (или `--process`, `--hwnd`), `--iters N`.
+Design notes live in `docs/superpowers/specs/`.
