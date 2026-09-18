@@ -1,8 +1,8 @@
-import screenshot_helper as sh
+import grabwin as gw
 
 
 def test_version_is_string():
-    assert isinstance(sh.__version__, str) and sh.__version__
+    assert isinstance(gw.__version__, str) and gw.__version__
 
 
 def test_exception_hierarchy():
@@ -13,6 +13,6 @@ def test_exception_hierarchy():
         "CaptureTimeoutError",
         "CaptureUnsupportedError",
     ):
-        exc = getattr(sh, name)
-        assert issubclass(exc, sh.CaptureError)
+        exc = getattr(gw, name)
+        assert issubclass(exc, gw.CaptureError)
         assert issubclass(exc, Exception)

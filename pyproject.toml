@@ -3,7 +3,7 @@ requires = ["maturin>=1.15,<2"]
 build-backend = "maturin"
 
 [project]
-name = "screenshot_helper"
+name = "grabwin"
 version = "0.1.0"
 description = "Fast per-window screenshots on Windows (Windows Graphics Capture) as numpy arrays or PNG bytes"
 readme = "README.md"
@@ -15,5 +15,5 @@ dev = ["pytest", "pillow"]
 
 [tool.maturin]
 python-source = "python"
-module-name = "screenshot_helper._native"
+module-name = "grabwin._native"
 features = ["extension-module"]

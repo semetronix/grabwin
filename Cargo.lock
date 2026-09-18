@@ -65,6 +65,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "grabwin"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "numpy",
+ "png",
+ "pyo3",
+ "pyo3-log",
+ "windows",
+]
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -307,18 +319,6 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
-
-[[package]]
-name = "screenshot_helper"
-version = "0.1.0"
-dependencies = [
- "log",
- "numpy",
- "png",
- "pyo3",
- "pyo3-log",
- "windows",
-]
 
 [[package]]
 name = "simd-adler32"

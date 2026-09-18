@@ -3,7 +3,7 @@ import argparse
 import statistics
 import time
 
-import screenshot_helper as sh
+import grabwin as gw
 
 
 def bench(label, fn, iters):
@@ -28,7 +28,7 @@ def main():
     sel = {k: v for k, v in (("title", a.title), ("process", a.process), ("hwnd", a.hwnd)) if v is not None}
 
     for mode in ("on_demand", "live"):
-        with sh.WindowCapture(mode=mode, **sel) as cap:
+        with gw.WindowCapture(mode=mode, **sel) as cap:
             w, h = cap.size
             print(f"\n[{mode}] window {w}x{h}, target={cap.target}")
             bench("grab() bgra", cap.grab, a.iters)

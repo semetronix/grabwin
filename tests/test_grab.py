@@ -4,13 +4,13 @@ import numpy as np
 import pytest
 from PIL import Image
 
-import screenshot_helper as sh
+import grabwin as gw
 
 pytestmark = pytest.mark.gui
 
 
 def test_grab_bgra_default(tk_window):
-    with sh.WindowCapture(hwnd=tk_window.hwnd) as cap:
+    with gw.WindowCapture(hwnd=tk_window.hwnd) as cap:
         arr = cap.grab()
         assert arr.dtype == np.uint8 and arr.shape == (480, 640, 4)
         assert arr.flags["C_CONTIGUOUS"]
@@ -20,7 +20,7 @@ def test_grab_bgra_default(tk_window):
 
 @pytest.mark.parametrize("fmt,channels,red", [("rgb", 3, 0), ("bgr", 3, 2), ("rgba", 4, 0), ("BGRA", 4, 2)])
 def test_grab_formats(tk_window, fmt, channels, red):
-    with sh.WindowCapture(hwnd=tk_window.hwnd) as cap:
+    with gw.WindowCapture(hwnd=tk_window.hwnd) as cap:
         arr = cap.grab(fmt)
         assert arr.shape == (480, 640, channels)
         assert arr[0, 0, red] > 245
@@ -28,14 +28,14 @@ def test_grab_formats(tk_window, fmt, channels, red):
 
 
 def test_grab_bad_format(tk_window):
-    with sh.WindowCapture(hwnd=tk_window.hwnd) as cap:
+    with gw.WindowCapture(hwnd=tk_window.hwnd) as cap:
         with pytest.raises(ValueError):
             cap.grab("yuv")
 
 
 @pytest.mark.parametrize("level", [0, 1, 9])
 def test_grab_png(tk_window, level):
-    with sh.WindowCapture(hwnd=tk_window.hwnd) as cap:
+    with gw.WindowCapture(hwnd=tk_window.hwnd) as cap:
         data = cap.grab_png(compression=level)
         assert isinstance(data, bytes) and data[:8] == b"\x89PNG\r\n\x1a\n"
         img = Image.open(io.BytesIO(data))
@@ -45,13 +45,13 @@ def test_grab_png(tk_window, level):
 
 def test_save_png(tk_window, tmp_path):
     out = tmp_path / "shot.png"
-    with sh.WindowCapture(hwnd=tk_window.hwnd) as cap:
+    with gw.WindowCapture(hwnd=tk_window.hwnd) as cap:
         cap.save_png(out)
     assert Image.open(out).size == (640, 480)
 
 
 def test_grab_array_owned_by_caller(tk_window):
-    with sh.WindowCapture(hwnd=tk_window.hwnd) as cap:
+    with gw.WindowCapture(hwnd=tk_window.hwnd) as cap:
         a = cap.grab()
         b = cap.grab()
         a[:] = 0

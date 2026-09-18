@@ -47,7 +47,7 @@ impl Drop for DpiGuard {
     }
 }
 
-#[pyclass(module = "screenshot_helper", get_all, frozen, skip_from_py_object)]
+#[pyclass(module = "grabwin", get_all, frozen, skip_from_py_object)]
 #[derive(Debug, Clone)]
 pub struct WindowInfo {
     pub hwnd: isize,

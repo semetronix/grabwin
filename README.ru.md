@@ -1,4 +1,4 @@
-# screenshot_helper
+# grabwin
 
 [English](README.md) | **Русский**
 
@@ -26,14 +26,14 @@ maturin develop --release        # или: maturin build --release -> dist/*.whl
 ## Использование
 
 ```python
-import screenshot_helper as sh
+import grabwin as gw
 
 # Список окон, доступных для захвата (видимые, с заголовком, верхнего уровня)
-for w in sh.list_windows():
+for w in gw.list_windows():
     print(w)          # WindowInfo(hwnd=..., title=..., process="chrome.exe", pid=..., width=..., height=..., is_minimized=False)
 
 # Захват по имени процесса (или title="..." / hwnd=...)
-with sh.WindowCapture(process="chrome.exe") as cap:
+with gw.WindowCapture(process="chrome.exe") as cap:
     arr = cap.grab()            # numpy uint8, форма (h, w, 4), BGRA
     rgb = cap.grab("rgb")       # форма (h, w, 3)
     png = cap.grab_png()        # bytes, RGB PNG
@@ -41,7 +41,7 @@ with sh.WindowCapture(process="chrome.exe") as cap:
     data, w, h = cap.grab_raw() # (bytes BGRA, ширина, высота) — без numpy
 
 # Бот, снимающий много раз в секунду:
-with sh.WindowCapture(title="Game", mode="live") as cap:
+with gw.WindowCapture(title="Game", mode="live") as cap:
     while True:
         frame = cap.grab("bgr")   # ~1 мс
         ...
@@ -73,7 +73,7 @@ with sh.WindowCapture(title="Game", mode="live") as cap:
 
 ### Исключения
 
-Все наследуют `screenshot_helper.CaptureError`:
+Все наследуют `grabwin.CaptureError`:
 
 | Исключение | Когда |
 |---|---|
@@ -87,7 +87,7 @@ with sh.WindowCapture(title="Game", mode="live") as cap:
 
 ### Логирование
 
-Rust-ядро пишет в стандартный `logging` (логгер `screenshot_helper`, уровень `DEBUG` — детали сессии: вычисленная обрезка, переключение на монитор). Настраивайте `logging` **до** первого вызова захвата — уровни кешируются при первом обращении.
+Rust-ядро пишет в стандартный `logging` (логгер `grabwin`, уровень `DEBUG` — детали сессии: вычисленная обрезка, переключение на монитор). Настраивайте `logging` **до** первого вызова захвата — уровни кешируются при первом обращении.
 
 ## Производительность
 

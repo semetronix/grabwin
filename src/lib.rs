@@ -25,12 +25,12 @@ fn list_windows() -> Vec<WindowInfo> {
     window::list_windows()
 }
 
-create_exception!(screenshot_helper, CaptureError, PyException);
-create_exception!(screenshot_helper, WindowNotFoundError, CaptureError);
-create_exception!(screenshot_helper, WindowClosedError, CaptureError);
-create_exception!(screenshot_helper, WindowMinimizedError, CaptureError);
-create_exception!(screenshot_helper, CaptureTimeoutError, CaptureError);
-create_exception!(screenshot_helper, CaptureUnsupportedError, CaptureError);
+create_exception!(grabwin, CaptureError, PyException);
+create_exception!(grabwin, WindowNotFoundError, CaptureError);
+create_exception!(grabwin, WindowClosedError, CaptureError);
+create_exception!(grabwin, WindowMinimizedError, CaptureError);
+create_exception!(grabwin, CaptureTimeoutError, CaptureError);
+create_exception!(grabwin, CaptureUnsupportedError, CaptureError);
 
 impl From<Error> for PyErr {
     fn from(e: Error) -> PyErr {
@@ -62,7 +62,7 @@ fn selector_from_args(
     }
 }
 
-#[pyclass(module = "screenshot_helper")]
+#[pyclass(module = "grabwin")]
 pub struct WindowCapture {
     inner: Mutex<Option<Capture>>,
     hwnd: isize,

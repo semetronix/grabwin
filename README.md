@@ -1,4 +1,4 @@
-# screenshot_helper
+# grabwin
 
 **English** | [Русский](README.ru.md)
 
@@ -26,14 +26,14 @@ maturin develop --release        # or: maturin build --release -> dist/*.whl
 ## Usage
 
 ```python
-import screenshot_helper as sh
+import grabwin as gw
 
 # List capturable windows (visible, titled, top-level)
-for w in sh.list_windows():
+for w in gw.list_windows():
     print(w)          # WindowInfo(hwnd=..., title=..., process="chrome.exe", pid=..., width=..., height=..., is_minimized=False)
 
 # Capture by process name (or title="..." / hwnd=...)
-with sh.WindowCapture(process="chrome.exe") as cap:
+with gw.WindowCapture(process="chrome.exe") as cap:
     arr = cap.grab()            # numpy uint8, shape (h, w, 4), BGRA
     rgb = cap.grab("rgb")       # shape (h, w, 3)
     png = cap.grab_png()        # bytes, RGB PNG
@@ -41,7 +41,7 @@ with sh.WindowCapture(process="chrome.exe") as cap:
     data, w, h = cap.grab_raw() # (bytes BGRA, width, height) — no numpy needed
 
 # A bot grabbing frames many times per second:
-with sh.WindowCapture(title="Game", mode="live") as cap:
+with gw.WindowCapture(title="Game", mode="live") as cap:
     while True:
         frame = cap.grab("bgr")   # ~1 ms
         ...
@@ -73,7 +73,7 @@ All `grab*()` calls release the GIL while waiting, reading back and encoding, so
 
 ### Exceptions
 
-All derive from `screenshot_helper.CaptureError`:
+All derive from `grabwin.CaptureError`:
 
 | Exception | When |
 |---|---|
@@ -87,7 +87,7 @@ All derive from `screenshot_helper.CaptureError`:
 
 ### Logging
 
-The Rust core logs through Python's `logging` module (logger `screenshot_helper`, level `DEBUG` for session details such as the computed crop and fullscreen fallback). Configure `logging` **before** the first capture call — log levels are cached on first use.
+The Rust core logs through Python's `logging` module (logger `grabwin`, level `DEBUG` for session details such as the computed crop and fullscreen fallback). Configure `logging` **before** the first capture call — log levels are cached on first use.
 
 ## Performance
 

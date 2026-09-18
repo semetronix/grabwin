@@ -3,7 +3,7 @@ import sys
 
 import pytest
 
-import screenshot_helper as sh
+import grabwin as gw
 
 pytestmark = pytest.mark.gui
 
@@ -20,4 +20,4 @@ def test_list_windows_finds_tk(tk_window):
 
 
 def test_list_windows_has_no_empty_titles():
-    assert all(w.title for w in sh.list_windows())
+    assert all(w.title for w in gw.list_windows())

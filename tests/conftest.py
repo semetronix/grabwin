@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-import screenshot_helper as sh
+import grabwin as gw
 
 HERE = Path(__file__).parent
 
@@ -48,7 +48,7 @@ class TkWin:
         time.sleep(0.3)  # let Tk paint the first frame
 
     def find(self):
-        return next((w for w in sh.list_windows() if w.title == self.title), None)
+        return next((w for w in gw.list_windows() if w.title == self.title), None)
 
     def send(self, cmd: str, settle: float = 0.4):
         self.proc.stdin.write(cmd + "\n")

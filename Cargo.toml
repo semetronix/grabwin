@@ -1,10 +1,10 @@
 [package]
-name = "screenshot_helper"
+name = "grabwin"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "screenshot_helper"
+name = "grabwin"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]

@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-import screenshot_helper as sh
+import grabwin as gw
 
 pytestmark = pytest.mark.gui
 
@@ -30,7 +30,7 @@ def assert_all_red(data: bytes, w: int, h: int) -> None:
 
 
 def test_grab_raw_dimensions_and_colour(tk_window):
-    with sh.WindowCapture(hwnd=tk_window.hwnd) as cap:
+    with gw.WindowCapture(hwnd=tk_window.hwnd) as cap:
         assert cap.hwnd == tk_window.hwnd
         data, w, h = cap.grab_raw()
         assert (w, h) == (640, 480)
@@ -46,7 +46,7 @@ def test_dpi_unaware_window_crop_covers_client_area(tk_window_nodpi):
     client area. On a 100 % monitor this passes trivially (logical == physical) and only guards
     the code path; the assertions bite on scaled setups."""
     info = tk_window_nodpi.info
-    with sh.WindowCapture(hwnd=tk_window_nodpi.hwnd) as cap:
+    with gw.WindowCapture(hwnd=tk_window_nodpi.hwnd) as cap:
         data, w, h = cap.grab_raw()
         assert (w, h) == cap.size == (info.width, info.height)
         assert w >= 640 and h >= 480  # physical size is never smaller than the logical request
@@ -54,32 +54,32 @@ def test_dpi_unaware_window_crop_covers_client_area(tk_window_nodpi):
 
 
 def test_selectors_resolve_same_window(tk_window):
-    with sh.WindowCapture(title=tk_window.title.upper()) as by_title:
+    with gw.WindowCapture(title=tk_window.title.upper()) as by_title:
         assert by_title.hwnd == tk_window.hwnd
     # process selector picks the largest visible window of that process; other python.exe windows
     # may exist on the machine, so only check it lands on *some* python.exe window.
     proc_name = os.path.basename(sys.executable)
-    with sh.WindowCapture(process=proc_name.upper()) as by_proc:
-        python_hwnds = {w.hwnd for w in sh.list_windows() if w.process.lower() == proc_name.lower()}
+    with gw.WindowCapture(process=proc_name.upper()) as by_proc:
+        python_hwnds = {w.hwnd for w in gw.list_windows() if w.process.lower() == proc_name.lower()}
         assert by_proc.hwnd in python_hwnds
 
 
 def test_not_found():
-    with pytest.raises(sh.WindowNotFoundError):
-        sh.WindowCapture(title="sh-no-such-window-8c1f")
+    with pytest.raises(gw.WindowNotFoundError):
+        gw.WindowCapture(title="sh-no-such-window-8c1f")
 
 
 def test_selector_validation():
     with pytest.raises(ValueError):
-        sh.WindowCapture()
+        gw.WindowCapture()
     with pytest.raises(ValueError):
-        sh.WindowCapture(hwnd=1, title="x")
+        gw.WindowCapture(hwnd=1, title="x")
 
 
 def test_size_polling_during_resize_does_not_deadlock(tk_window):
     """Regression: the WGC callback used to log (taking the GIL) while holding the capture state,
     while a Python thread holding the GIL blocked on that state in `size` -> deadlock on resize."""
-    with sh.WindowCapture(hwnd=tk_window.hwnd, timeout_ms=2000) as cap:
+    with gw.WindowCapture(hwnd=tk_window.hwnd, timeout_ms=2000) as cap:
         assert cap.grab_raw()[1:] == (640, 480)
         stop = threading.Event()
         sizes = []
