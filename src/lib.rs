@@ -130,7 +130,7 @@ impl WindowCapture {
         };
         let (cap, hwnd) = py.detach(|| -> Result<(Capture, isize)> {
             let info = window::find_window(&sel)?;
-            Ok((Capture::start(info.hwnd, opts)?, info.hwnd))
+            Ok((Capture::start_with_fallback(info.hwnd, opts)?, info.hwnd))
         })?;
         Ok(Self {
             inner: Mutex::new(Some(cap)),
@@ -152,6 +152,19 @@ impl WindowCapture {
     #[getter]
     fn size(&self, py: Python<'_>) -> PyResult<(u32, u32)> {
         Ok(py.detach(|| self.with_capture(|c| Ok(c.size())))?)
+    }
+
+    /// "window" (WGC window item) or "monitor" (fallback for exclusive-fullscreen windows).
+    #[getter]
+    fn target(&self, py: Python<'_>) -> PyResult<&'static str> {
+        Ok(py.detach(|| {
+            self.with_capture(|c| {
+                Ok(match c.target() {
+                    capture::Target::Window => "window",
+                    capture::Target::Monitor => "monitor",
+                })
+            })
+        })?)
     }
 
     #[getter]

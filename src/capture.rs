@@ -11,6 +11,7 @@ use windows::Graphics::Capture::{
 use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Graphics::SizeInt32;
 use windows::Win32::Graphics::Direct3D11::{ID3D11Texture2D, D3D11_BOX};
+use windows::Win32::Graphics::Gdi::HMONITOR;
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
 
 use crate::d3d::{self, D3D};
@@ -42,6 +43,14 @@ fn pool_size_for(hwnd: isize, content: SizeInt32) -> SizeInt32 {
 pub enum Mode {
     OnDemand,
     Live,
+}
+
+/// What the WGC item was created for. `Monitor` is the fallback for exclusive-fullscreen windows,
+/// which WGC cannot capture as windows; frames are then cropped to the window's client rect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    Window,
+    Monitor,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -76,6 +85,9 @@ struct Shared {
     hwnd: isize,
     d3d: D3D,
     mode: Mode,
+    target: Target,
+    /// Top-left of the captured monitor in screen coordinates; `(0, 0)` for `Target::Window`.
+    monitor_origin: (i32, i32),
     state: Mutex<State>,
     cv: Condvar,
     closed: AtomicBool,
@@ -113,6 +125,42 @@ fn property_present(name: &str) -> bool {
     .unwrap_or(false)
 }
 
+/// True when the window (by either rect) exactly covers its monitor - the shape of an
+/// exclusive-fullscreen game, and also of a borderless window sized to the screen.
+fn is_fullscreen(hwnd: isize) -> Result<bool> {
+    let geo = window::geometry(hwnd)?;
+    let (_, mon) = window::monitor_of(hwnd)?;
+    Ok(geo.window == mon || geo.extended == mon)
+}
+
+/// Client-rect crop of a `w`x`h` frame for the given target. Runs on the WGC callback thread
+/// (see `on_frame`), so it must never log.
+fn compute_crop(
+    hwnd: isize,
+    target: Target,
+    monitor_origin: (i32, i32),
+    w: i32,
+    h: i32,
+) -> Result<Crop> {
+    match target {
+        Target::Window => window::pick_crop(hwnd, w, h),
+        Target::Monitor => {
+            // Client rect in screen coords relative to the monitor origin, clamped to the monitor.
+            let geo = window::geometry(hwnd)?;
+            let x = (geo.client_origin.0 - monitor_origin.0).clamp(0, (w - 1).max(0));
+            let y = (geo.client_origin.1 - monitor_origin.1).clamp(0, (h - 1).max(0));
+            let width = geo.client_size.0.clamp(1, (w - x).max(1));
+            let height = geo.client_size.1.clamp(1, (h - y).max(1));
+            Ok(Crop {
+                x: x as u32,
+                y: y as u32,
+                width: width as u32,
+                height: height as u32,
+            })
+        }
+    }
+}
+
 /// Runs on the WGC worker thread. MUST NOT log or otherwise touch Python: a Python thread may be
 /// blocked on `state` while holding the GIL, and pyo3-log acquires the GIL to emit a record.
 fn on_frame(shared: &Shared, pool: &Direct3D11CaptureFramePool) -> Result<()> {
@@ -136,7 +184,13 @@ fn on_frame(shared: &Shared, pool: &Direct3D11CaptureFramePool) -> Result<()> {
         // drop the frame (see `pool_size_for` for why this is a last resort). Compute the new crop
         // before touching anything so a failure leaves the state consistent.
         drop(frame);
-        let crop = window::pick_crop(shared.hwnd, size.Width, size.Height)?;
+        let crop = compute_crop(
+            shared.hwnd,
+            shared.target,
+            shared.monitor_origin,
+            size.Width,
+            size.Height,
+        )?;
         let pool_size = pool_size_for(shared.hwnd, size);
         pool.Recreate(&shared.d3d.winrt, PIXEL_FORMAT, POOL_FRAMES, pool_size)?;
         st.pool = (pool_size.Width, pool_size.Height);
@@ -151,7 +205,13 @@ fn on_frame(shared: &Shared, pool: &Direct3D11CaptureFramePool) -> Result<()> {
     if (size.Width, size.Height) != st.content {
         // Resized within the pool: the content sits at the surface's top-left, so this very frame
         // is usable with a fresh crop; the cached textures have the old crop size.
-        let crop = window::pick_crop(shared.hwnd, size.Width, size.Height)?;
+        let crop = compute_crop(
+            shared.hwnd,
+            shared.target,
+            shared.monitor_origin,
+            size.Width,
+            size.Height,
+        )?;
         st.content = (size.Width, size.Height);
         st.crop = crop;
         st.latest = None;
@@ -207,8 +267,27 @@ fn on_frame(shared: &Shared, pool: &Direct3D11CaptureFramePool) -> Result<()> {
 }
 
 impl Capture {
+    /// Window capture first; if the window is monitor-sized and yields no frame within the timeout,
+    /// switch to capturing the monitor it sits on (exclusive-fullscreen games). Must be called
+    /// without the GIL: it logs and blocks for up to `opts.timeout_ms`.
+    pub fn start_with_fallback(hwnd: isize, opts: Options) -> Result<Self> {
+        let mut cap = Self::start_inner(hwnd, opts, Target::Window)?;
+        if !is_fullscreen(hwnd)? {
+            return Ok(cap);
+        }
+        match cap.grab_bgra() {
+            Ok(_) => Ok(cap),
+            Err(Error::Timeout(_)) => {
+                log::debug!("fullscreen window gave no frame; falling back to monitor capture");
+                cap.close();
+                Self::start_inner(hwnd, opts, Target::Monitor)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Must be called without the GIL: it logs, and pyo3-log acquires the GIL to do so.
-    pub fn start(hwnd: isize, opts: Options) -> Result<Self> {
+    fn start_inner(hwnd: isize, opts: Options, target: Target) -> Result<Self> {
         if !GraphicsCaptureSession::IsSupported().unwrap_or(false) {
             return Err(Error::Unsupported(
                 "Windows Graphics Capture is not available (need Windows 10 1903+)".into(),
@@ -216,13 +295,24 @@ impl Capture {
         }
         let d3d = d3d::create()?;
         let interop = windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
-        let item: GraphicsCaptureItem = unsafe { interop.CreateForWindow(window::hwnd(hwnd))? };
+        let (item, monitor_origin): (GraphicsCaptureItem, (i32, i32)) = match target {
+            Target::Window => (
+                unsafe { interop.CreateForWindow(window::hwnd(hwnd))? },
+                (0, 0),
+            ),
+            Target::Monitor => {
+                let (hmon, rect) = window::monitor_of(hwnd)?;
+                let item =
+                    unsafe { interop.CreateForMonitor(HMONITOR(hmon as *mut std::ffi::c_void))? };
+                (item, (rect.0, rect.1))
+            }
+        };
         let size: SizeInt32 = item.Size()?;
-        let crop = window::pick_crop(hwnd, size.Width, size.Height)?;
+        let crop = compute_crop(hwnd, target, monitor_origin, size.Width, size.Height)?;
         let pool_size = pool_size_for(hwnd, size);
         if log::log_enabled!(log::Level::Debug) {
             log::debug!(
-                "crop for hwnd {hwnd}: {crop:?} (content {}x{}, pool {}x{}, geo {:?})",
+                "crop for hwnd {hwnd} ({target:?}): {crop:?} (content {}x{}, pool {}x{}, geo {:?})",
                 size.Width,
                 size.Height,
                 pool_size.Width,
@@ -243,6 +333,8 @@ impl Capture {
             hwnd,
             d3d,
             mode: opts.mode,
+            target,
+            monitor_origin,
             state: Mutex::new(State {
                 pool: (pool_size.Width, pool_size.Height),
                 content: (size.Width, size.Height),
@@ -310,6 +402,10 @@ impl Capture {
 
     pub fn is_closed(&self) -> bool {
         self.stopped || self.shared.closed.load(Ordering::SeqCst)
+    }
+
+    pub fn target(&self) -> Target {
+        self.shared.target
     }
 
     pub fn size(&self) -> (u32, u32) {
