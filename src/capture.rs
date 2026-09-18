@@ -147,16 +147,7 @@ fn compute_crop(
         Target::Monitor => {
             // Client rect in screen coords relative to the monitor origin, clamped to the monitor.
             let geo = window::geometry(hwnd)?;
-            let x = (geo.client_origin.0 - monitor_origin.0).clamp(0, (w - 1).max(0));
-            let y = (geo.client_origin.1 - monitor_origin.1).clamp(0, (h - 1).max(0));
-            let width = geo.client_size.0.clamp(1, (w - x).max(1));
-            let height = geo.client_size.1.clamp(1, (h - y).max(1));
-            Ok(Crop {
-                x: x as u32,
-                y: y as u32,
-                width: width as u32,
-                height: height as u32,
-            })
+            Ok(window::clamp_client_crop(&geo, monitor_origin, w, h))
         }
     }
 }
@@ -269,7 +260,8 @@ fn on_frame(shared: &Shared, pool: &Direct3D11CaptureFramePool) -> Result<()> {
 impl Capture {
     /// Window capture first; if the window is monitor-sized and yields no frame within the timeout,
     /// switch to capturing the monitor it sits on (exclusive-fullscreen games). Must be called
-    /// without the GIL: it logs and blocks for up to `opts.timeout_ms`.
+    /// without the GIL: it logs, and for a monitor-sized window it may block for up to
+    /// `opts.timeout_ms` (the probe grab) plus the time to start the second, monitor session.
     pub fn start_with_fallback(hwnd: isize, opts: Options) -> Result<Self> {
         let mut cap = Self::start_inner(hwnd, opts, Target::Window)?;
         if !is_fullscreen(hwnd)? {

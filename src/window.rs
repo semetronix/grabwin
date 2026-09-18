@@ -280,6 +280,18 @@ pub fn crop_for(geo: &Geometry, content_w: i32, content_h: i32) -> Crop {
         // the WGC callback thread, and pyo3-log would take the GIL.)
         (geo.window.0, geo.window.1)
     };
+    clamp_client_crop(geo, origin, content_w, content_h)
+}
+
+/// Client-area crop of a `content_w`x`content_h` frame whose top-left sits at `origin` in screen
+/// coordinates (a window frame origin or a monitor origin), clamped to the frame and never empty.
+/// Pure; never logs.
+pub fn clamp_client_crop(
+    geo: &Geometry,
+    origin: (i32, i32),
+    content_w: i32,
+    content_h: i32,
+) -> Crop {
     let x = (geo.client_origin.0 - origin.0).clamp(0, (content_w - 1).max(0));
     let y = (geo.client_origin.1 - origin.1).clamp(0, (content_h - 1).max(0));
     let width = geo.client_size.0.clamp(1, (content_w - x).max(1));
@@ -372,5 +384,27 @@ mod tests {
         g.client_size = (0, 0);
         let c = crop_for(&g, 814, 607);
         assert!(c.width >= 1 && c.height >= 1);
+    }
+
+    #[test]
+    fn clamp_client_crop_with_monitor_origin() {
+        // Window on a second monitor at (1920, 0), 1920x1080: client at (1950, 130), 1900x1000.
+        // The crop is relative to the monitor origin and clamped to the monitor's content.
+        let g = Geometry {
+            window: (1943, 100, 3857, 1207),
+            extended: (1950, 100, 3850, 1200),
+            client_origin: (1950, 130),
+            client_size: (1900, 1000),
+        };
+        let c = clamp_client_crop(&g, (1920, 0), 1920, 1080);
+        assert_eq!(
+            c,
+            Crop {
+                x: 30,
+                y: 130,
+                width: 1890,
+                height: 950
+            }
+        );
     }
 }

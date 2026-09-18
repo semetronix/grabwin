@@ -21,4 +21,4 @@ def test_fullscreen_sized_window_still_captures(tk_window):
     with sh.WindowCapture(hwnd=tk_window.hwnd) as cap:
         arr = cap.grab()
         assert arr.shape[0] >= h - 100 and arr.shape[1] >= w - 100
-        assert cap.target in ("window", "monitor")
+        assert cap.target == "window"
