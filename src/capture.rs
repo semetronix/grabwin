@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use windows::core::{IInspectable, HSTRING};
@@ -61,24 +61,45 @@ pub struct Options {
     pub border: bool,
 }
 
+/// The crop-sized GPU copy of the last frame and its CPU-readable staging twin. Always created and
+/// dropped together: a half-initialised pair would leave the next frame with nothing to read back.
+struct Textures {
+    latest: ID3D11Texture2D,
+    staging: ID3D11Texture2D,
+}
+
+impl Textures {
+    fn create(d3d: &D3D, width: u32, height: u32) -> Result<Self> {
+        let latest = d3d::create_texture(&d3d.device, width, height, false)?;
+        let staging = d3d::create_texture(&d3d.device, width, height, true)?;
+        Ok(Self { latest, staging })
+    }
+}
+
 struct State {
     /// Surface size of the frame pool; frames are only usable while content fits in it.
     pool: (i32, i32),
     /// Last seen `ContentSize`; `crop` is valid for this size.
     content: (i32, i32),
     crop: Crop,
-    latest: Option<ID3D11Texture2D>,
-    staging: Option<ID3D11Texture2D>,
+    textures: Option<Textures>,
     latest_cpu: Option<Vec<u8>>,
 }
 
 impl State {
     fn has_frame(&self, mode: Mode) -> bool {
         match mode {
-            Mode::OnDemand => self.latest.is_some(),
+            Mode::OnDemand => self.textures.is_some(),
             Mode::Live => self.latest_cpu.is_some(),
         }
     }
+}
+
+/// Locks `m`, ignoring poisoning. A panic while a guard was held (caught by pyo3 on a Python
+/// thread, or by the frame callback's `catch_unwind`) must not turn every later lock into another
+/// panic - inside the WGC callback that would abort the process.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 struct Shared {
@@ -168,7 +189,7 @@ fn on_frame(shared: &Shared, pool: &Direct3D11CaptureFramePool) -> Result<()> {
     if window::is_minimized(shared.hwnd) {
         return Ok(());
     }
-    let mut st = shared.state.lock().unwrap();
+    let mut st = lock(&shared.state);
 
     if size.Width > st.pool.0 || size.Height > st.pool.1 {
         // Content outgrew the pool: this frame's surface holds only part of it. Recreate larger and
@@ -187,8 +208,7 @@ fn on_frame(shared: &Shared, pool: &Direct3D11CaptureFramePool) -> Result<()> {
         st.pool = (pool_size.Width, pool_size.Height);
         st.content = (size.Width, size.Height);
         st.crop = crop;
-        st.latest = None;
-        st.staging = None;
+        st.textures = None;
         st.latest_cpu = None;
         return Ok(());
     }
@@ -205,26 +225,15 @@ fn on_frame(shared: &Shared, pool: &Direct3D11CaptureFramePool) -> Result<()> {
         )?;
         st.content = (size.Width, size.Height);
         st.crop = crop;
-        st.latest = None;
-        st.staging = None;
+        st.textures = None;
         st.latest_cpu = None;
     }
 
     let src = d3d::texture_from_surface(&frame.Surface()?)?;
     let crop = st.crop;
-    if st.latest.is_none() {
-        st.latest = Some(d3d::create_texture(
-            &shared.d3d.device,
-            crop.width,
-            crop.height,
-            false,
-        )?);
-        st.staging = Some(d3d::create_texture(
-            &shared.d3d.device,
-            crop.width,
-            crop.height,
-            true,
-        )?);
+    if st.textures.is_none() {
+        // Built into a local first: on failure the state stays "no textures" rather than half set.
+        st.textures = Some(Textures::create(&shared.d3d, crop.width, crop.height)?);
     }
     let region = D3D11_BOX {
         left: crop.x,
@@ -234,19 +243,22 @@ fn on_frame(shared: &Shared, pool: &Direct3D11CaptureFramePool) -> Result<()> {
         bottom: crop.y + crop.height,
         back: 1,
     };
-    let latest = st.latest.as_ref().unwrap();
+    let Some(tex) = st.textures.as_ref() else {
+        return Err(Error::Internal(
+            "frame textures missing after creation".into(),
+        ));
+    };
     unsafe {
         shared
             .d3d
             .context
-            .CopySubresourceRegion(latest, 0, 0, 0, 0, &src, 0, Some(&region));
+            .CopySubresourceRegion(&tex.latest, 0, 0, 0, 0, &src, 0, Some(&region));
     }
     if shared.mode == Mode::Live {
-        let staging = st.staging.as_ref().unwrap();
         let cpu = d3d::readback(
             &shared.d3d.context,
-            staging,
-            latest,
+            &tex.staging,
+            &tex.latest,
             crop.width,
             crop.height,
         )?;
@@ -255,6 +267,17 @@ fn on_frame(shared: &Shared, pool: &Direct3D11CaptureFramePool) -> Result<()> {
     drop(st);
     shared.cv.notify_all();
     Ok(())
+}
+
+/// Best-effort text of a panic payload (`panic!("..")` gives `&str` or `String`).
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s
+    } else {
+        "<non-string payload>"
+    }
 }
 
 impl Capture {
@@ -331,8 +354,7 @@ impl Capture {
                 pool: (pool_size.Width, pool_size.Height),
                 content: (size.Width, size.Height),
                 crop,
-                latest: None,
-                staging: None,
+                textures: None,
                 latest_cpu: None,
             }),
             cv: Condvar::new(),
@@ -340,19 +362,31 @@ impl Capture {
             last_error: Mutex::new(None),
         });
 
-        // Neither handler may log or touch Python (see `on_frame`).
+        // Neither handler may log or touch Python (see `on_frame`). `Invoke` is `extern "system"`,
+        // so a panic escaping this closure would abort the whole (Python) process: catch it and
+        // report it like any other callback failure.
         let frame_token = pool.FrameArrived(&TypedEventHandler::<
             Direct3D11CaptureFramePool,
             IInspectable,
         >::new({
             let shared = shared.clone();
             move |pool, _| {
-                if let Some(pool) = pool.as_ref() {
-                    if let Err(e) = on_frame(&shared, pool) {
-                        *shared.last_error.lock().unwrap() = Some(e);
-                        shared.cv.notify_all();
-                    }
-                }
+                let Some(pool) = pool.as_ref() else {
+                    return Ok(());
+                };
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    on_frame(&shared, pool)
+                }));
+                let err = match result {
+                    Ok(Ok(())) => return Ok(()),
+                    Ok(Err(e)) => e,
+                    Err(payload) => Error::Internal(format!(
+                        "frame handler panicked: {}",
+                        panic_message(payload.as_ref())
+                    )),
+                };
+                *lock(&shared.last_error) = Some(err);
+                shared.cv.notify_all();
                 Ok(())
             }
         }))?;
@@ -401,7 +435,7 @@ impl Capture {
     }
 
     pub fn size(&self) -> (u32, u32) {
-        let st = self.shared.state.lock().unwrap();
+        let st = lock(&self.shared.state);
         (st.crop.width, st.crop.height)
     }
 
@@ -413,16 +447,16 @@ impl Capture {
         if self.is_closed() || !window::is_alive(sh.hwnd) {
             return Err(Error::Closed);
         }
-        if let Some(e) = sh.last_error.lock().unwrap().take() {
+        if let Some(e) = lock(&sh.last_error).take() {
             return Err(e);
         }
         let deadline = Instant::now() + Duration::from_millis(self.timeout_ms as u64);
-        let mut st = sh.state.lock().unwrap();
+        let mut st = lock(&sh.state);
         while !st.has_frame(sh.mode) {
             if sh.closed.load(Ordering::SeqCst) {
                 return Err(Error::Closed);
             }
-            if let Some(e) = sh.last_error.lock().unwrap().take() {
+            if let Some(e) = lock(&sh.last_error).take() {
                 return Err(e);
             }
             if window::is_minimized(sh.hwnd) {
@@ -432,19 +466,27 @@ impl Capture {
             if now >= deadline {
                 return Err(Error::Timeout(self.timeout_ms));
             }
-            let (guard, _) = sh.cv.wait_timeout(st, deadline - now).unwrap();
+            let (guard, _) = sh
+                .cv
+                .wait_timeout(st, deadline - now)
+                .unwrap_or_else(PoisonError::into_inner);
             st = guard;
         }
         let crop = st.crop;
+        // `has_frame` guarantees the source below is present; fail softly rather than unwrap.
+        let missing = || Error::Internal("frame vanished while the state was locked".into());
         let bgra = match sh.mode {
-            Mode::Live => st.latest_cpu.clone().unwrap(),
-            Mode::OnDemand => d3d::readback(
-                &sh.d3d.context,
-                st.staging.as_ref().unwrap(),
-                st.latest.as_ref().unwrap(),
-                crop.width,
-                crop.height,
-            )?,
+            Mode::Live => st.latest_cpu.clone().ok_or_else(missing)?,
+            Mode::OnDemand => {
+                let tex = st.textures.as_ref().ok_or_else(missing)?;
+                d3d::readback(
+                    &sh.d3d.context,
+                    &tex.staging,
+                    &tex.latest,
+                    crop.width,
+                    crop.height,
+                )?
+            }
         };
         Ok(Frame {
             bgra,
@@ -470,5 +512,38 @@ impl Capture {
 impl Drop for Capture {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lock_survives_poisoning() {
+        let m = Arc::new(Mutex::new(5));
+        let poisoner = m.clone();
+        let _ = std::thread::spawn(move || {
+            let _g = poisoner.lock().unwrap();
+            panic!("poison");
+        })
+        .join();
+        assert!(m.is_poisoned());
+        assert_eq!(*lock(&m), 5);
+        *lock(&m) = 6;
+        assert_eq!(*lock(&m), 6);
+    }
+
+    #[test]
+    fn panic_payload_is_reported() {
+        let r = std::panic::catch_unwind(|| panic!("static str"));
+        assert_eq!(panic_message(r.unwrap_err().as_ref()), "static str");
+        let r = std::panic::catch_unwind(|| panic!("{}", String::from("formatted")));
+        assert_eq!(panic_message(r.unwrap_err().as_ref()), "formatted");
+        let r = std::panic::catch_unwind(|| std::panic::panic_any(7u8));
+        assert_eq!(
+            panic_message(r.unwrap_err().as_ref()),
+            "<non-string payload>"
+        );
     }
 }

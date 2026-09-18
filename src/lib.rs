@@ -42,7 +42,7 @@ impl From<Error> for PyErr {
             Error::Timeout(_) => CaptureTimeoutError::new_err(msg),
             Error::Unsupported(_) => CaptureUnsupportedError::new_err(msg),
             Error::Invalid(_) => pyo3::exceptions::PyValueError::new_err(msg),
-            Error::Windows(_) | Error::Encode(_) => CaptureError::new_err(msg),
+            Error::Windows(_) | Error::Encode(_) | Error::Internal(_) => CaptureError::new_err(msg),
         }
     }
 }

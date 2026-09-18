@@ -18,6 +18,8 @@ pub enum Error {
     Encode(String),
     /// Bad argument from the caller (unknown pixel format, bad selector combo, ...).
     Invalid(String),
+    /// Library bug surfaced at runtime (a panic caught in the frame callback, a broken invariant).
+    Internal(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -39,6 +41,7 @@ impl fmt::Display for Error {
             Error::Windows(e) => write!(f, "windows error: {e}"),
             Error::Encode(s) => write!(f, "png encode error: {s}"),
             Error::Invalid(s) => write!(f, "invalid argument: {s}"),
+            Error::Internal(s) => write!(f, "internal error: {s}"),
         }
     }
 }
