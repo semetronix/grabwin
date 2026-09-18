@@ -27,7 +27,10 @@ def test_minimize_returns_last_frame_then_recovers(tk_window):
         assert time.perf_counter() - t0 < 0.15
         assert arr.shape[:2] == (480, 640)
         tk_window.send("deiconify", settle=0.8)
-        assert cap.grab()[240, 320, 2] > 245
+        tk_window.send("geometry 700x500", settle=0.8)
+        arr = cap.grab()
+        assert arr.shape[:2] == (500, 700)
+        assert arr[250, 350, 2] > 245
 
 
 def test_minimized_before_first_frame_raises(tk_window):
