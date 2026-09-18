@@ -181,7 +181,6 @@ cargo test                       # Rust unit tests
 python -m pytest                 # integration tests (they open real windows); SH_NO_GUI=1 to skip
 ```
 
-Design notes live in `docs/superpowers/specs/`.
 
 ## License
 

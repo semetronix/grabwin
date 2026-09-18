@@ -181,7 +181,6 @@ cargo test                       # unit-тесты Rust
 python -m pytest                 # интеграционные (открывают реальные окна); SH_NO_GUI=1 чтобы пропустить
 ```
 
-Проектные заметки — в `docs/superpowers/specs/`.
 
 ## Лицензия
 
