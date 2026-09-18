@@ -157,20 +157,39 @@ fn process_name(pid: u32) -> String {
     }
 }
 
+/// Client-area origin and size in physical screen pixels. `GetClientRect` reports the window's
+/// own coordinate space - logical pixels for a DPI-unaware window on a scaled monitor - so both
+/// corners are mapped through `ClientToScreen`, which virtualizes to the calling thread's (PMv2)
+/// awareness. Requires the caller to hold a DpiGuard.
+fn client_rect_physical(w: HWND) -> Result<((i32, i32), (i32, i32))> {
+    let mut client = RECT::default();
+    let mut origin = POINT::default();
+    unsafe {
+        GetClientRect(w, &mut client)?;
+        let mut far = POINT {
+            x: client.right,
+            y: client.bottom,
+        };
+        if !ClientToScreen(w, &mut origin).as_bool() || !ClientToScreen(w, &mut far).as_bool() {
+            return Err(Error::Windows(windows::core::Error::from_thread()));
+        }
+        Ok(((origin.x, origin.y), (far.x - origin.x, far.y - origin.y)))
+    }
+}
+
 /// Requires the caller to hold a DpiGuard.
 fn info_unguarded(h: isize) -> Option<WindowInfo> {
     let w = hwnd(h);
     let mut pid = 0u32;
     unsafe { GetWindowThreadProcessId(w, Some(&mut pid)) };
-    let mut client = RECT::default();
-    unsafe { GetClientRect(w, &mut client).ok()? };
+    let (_, (width, height)) = client_rect_physical(w).ok()?;
     Some(WindowInfo {
         hwnd: h,
         title: window_title(h),
         process: process_name(pid),
         pid,
-        width: client.right - client.left,
-        height: client.bottom - client.top,
+        width,
+        height,
         is_minimized: unsafe { IsIconic(w).as_bool() },
     })
 }
@@ -235,12 +254,9 @@ pub fn geometry(h: isize) -> Result<Geometry> {
     let _dpi = DpiGuard::new();
     let w = hwnd(h);
     let mut window = RECT::default();
-    let mut client = RECT::default();
     let mut extended = RECT::default();
-    let mut origin = POINT::default();
     unsafe {
         GetWindowRect(w, &mut window)?;
-        GetClientRect(w, &mut client)?;
         if DwmGetWindowAttribute(
             w,
             DWMWA_EXTENDED_FRAME_BOUNDS,
@@ -251,15 +267,13 @@ pub fn geometry(h: isize) -> Result<Geometry> {
         {
             extended = window;
         }
-        if !ClientToScreen(w, &mut origin).as_bool() {
-            return Err(Error::Windows(windows::core::Error::from_thread()));
-        }
     }
+    let (client_origin, client_size) = client_rect_physical(w)?;
     Ok(Geometry {
         window: rect_tuple(window),
         extended: rect_tuple(extended),
-        client_origin: (origin.x, origin.y),
-        client_size: (client.right - client.left, client.bottom - client.top),
+        client_origin,
+        client_size,
     })
 }
 

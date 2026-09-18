@@ -39,6 +39,20 @@ def test_grab_raw_dimensions_and_colour(tk_window):
         assert_all_red(data, w, h)
 
 
+def test_dpi_unaware_window_crop_covers_client_area(tk_window_nodpi):
+    """A DPI-unaware window on a 125-150 % monitor is bitmap-stretched by Windows: its
+    GetClientRect is in logical pixels while the WGC frame and ClientToScreen are physical. The
+    crop must use the physical client size, or it would cover only the top-left part of the
+    client area. On a 100 % monitor this passes trivially (logical == physical) and only guards
+    the code path; the assertions bite on scaled setups."""
+    info = tk_window_nodpi.info
+    with sh.WindowCapture(hwnd=tk_window_nodpi.hwnd) as cap:
+        data, w, h = cap.grab_raw()
+        assert (w, h) == cap.size == (info.width, info.height)
+        assert w >= 640 and h >= 480  # physical size is never smaller than the logical request
+        assert_all_red(data, w, h)
+
+
 def test_selectors_resolve_same_window(tk_window):
     with sh.WindowCapture(title=tk_window.title.upper()) as by_title:
         assert by_title.hwnd == tk_window.hwnd

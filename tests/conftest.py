@@ -65,11 +65,10 @@ class TkWin:
                 self.proc.wait()
 
 
-@pytest.fixture
-def tk_window():
+def _spawn_tk(*extra_args: str):
     title = f"sh-test-{uuid.uuid4().hex[:8]}"
     proc = subprocess.Popen(
-        [sys.executable, str(HERE / "tkwin.py"), title, "640", "480"],
+        [sys.executable, str(HERE / "tkwin.py"), title, "640", "480", *extra_args],
         stdin=subprocess.PIPE,
         text=True,
     )
@@ -81,3 +80,14 @@ def tk_window():
         raise
     yield win
     win.close()
+
+
+@pytest.fixture
+def tk_window():
+    yield from _spawn_tk()
+
+
+@pytest.fixture
+def tk_window_nodpi():
+    """Same window from a DPI-unaware child process (system-scaled on 125-150 % monitors)."""
+    yield from _spawn_tk("nodpi")

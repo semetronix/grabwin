@@ -1,14 +1,18 @@
-"""Child process for GUI tests: shows a solid-colour Tk window, obeys stdin commands."""
+"""Child process for GUI tests: shows a solid-colour Tk window, obeys stdin commands.
+
+argv: title width height [nodpi]. With "nodpi" the process stays DPI-unaware, so on a scaled
+monitor Windows bitmap-stretches the window and its client rect is in logical pixels.
+"""
 import ctypes
 import queue
 import sys
 import threading
 import tkinter as tk
 
-# Per-monitor DPI aware, so Tk geometry is in physical pixels (matches list_windows()).
-ctypes.windll.shcore.SetProcessDpiAwareness(2)
-
 title, width, height = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+if sys.argv[4:5] != ["nodpi"]:
+    # Per-monitor DPI aware, so Tk geometry is in physical pixels (matches list_windows()).
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
 commands: "queue.Queue[str]" = queue.Queue()
 
 root = tk.Tk()
