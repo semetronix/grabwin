@@ -7,6 +7,17 @@ name = "grabwin"
 version = "0.1.0"
 description = "Fast per-window screenshots on Windows (Windows Graphics Capture) as numpy arrays or PNG bytes"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "semetronix" }]
+keywords = ["screenshot", "window", "capture", "windows-graphics-capture", "wgc", "numpy", "png"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Multimedia :: Graphics :: Capture :: Screen Capture",
+]
 requires-python = ">=3.12"
 dependencies = ["numpy>=1.26"]
 

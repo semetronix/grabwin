@@ -2,6 +2,9 @@
 name = "grabwin"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "Fast per-window screenshots on Windows via Windows Graphics Capture"
+repository = "https://github.com/semetronix/grabwin"
 
 [lib]
 name = "grabwin"

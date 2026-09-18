@@ -154,3 +154,7 @@ python -m pytest                 # integration tests (they open real windows); S
 ```
 
 Design notes live in `docs/superpowers/specs/`.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

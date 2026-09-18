@@ -154,3 +154,7 @@ python -m pytest                 # интеграционные (открыва�
 ```
 
 Проектные заметки — в `docs/superpowers/specs/`.
+
+## Лицензия
+
+MIT — см. [LICENSE](LICENSE).
