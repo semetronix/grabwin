@@ -62,7 +62,7 @@ with gw.WindowCapture(title="Game", mode="live") as cap:
 ### Методы и свойства
 
 - `grab(format="bgra")` → `numpy.ndarray`, `uint8`, C-contiguous. Форматы: `"bgra"`, `"rgba"` (форма `(h, w, 4)`), `"rgb"`, `"bgr"` (форма `(h, w, 3)`). Массив владеет своим буфером — его можно хранить сколько угодно.
-- `grab_png(compression=1)` → `bytes`. RGB PNG, альфа отбрасывается. `0` — без сжатия (самый быстрый, самый большой), `1` — быстрый (по умолчанию), `2–5` — сбалансированный, `6–9` — максимальный.
+- `grab_png(compression=1)` → `bytes`. RGB PNG, альфа отбрасывается. `0` — без сжатия (самый быстрый, самый большой), `1` — быстрый (по умолчанию), `2–5` — сбалансированный, `6–9` — максимальный. Уровни ≥ 2 на фотореалистичной картинке намного медленнее — см. «Производительность».
 - `save_png(path, compression=1)` — `grab_png()` с записью в файл.
 - `grab_raw()` → `(bytes, width, height)` — плотно упакованный BGRA.
 - `size` → `(width, height)` клиентской области (обновляется после ресайза).
@@ -91,7 +91,9 @@ Rust-ядро пишет в стандартный `logging` (логгер `grab
 
 ## Производительность
 
-Замерено `examples/bench.py` на Microsoft Edge (youtube.com), окно 1249×1364:
+Замерено `examples/bench.py`.
+
+### Браузер: Microsoft Edge (youtube.com), окно 1249×1364
 
 ```
 [on_demand] window 1249x1364, target=window
@@ -114,6 +116,32 @@ grab_png(compression=3)      median  16.14 ms   p95  16.47 ms
 grab_png(compression=9)      median  28.26 ms   p95  30.18 ms
 png size @1: 127 KiB
 ```
+
+
+### Игра: GTA V, окно без рамки 2560×1440 (кадр 14.7 МБ)
+
+```
+[on_demand] window 2560x1440, target=window
+grab() bgra                  median   4.56 ms   p95   6.98 ms
+grab('rgb')                  median   9.67 ms   p95  12.62 ms
+grab_raw()                   median   6.14 ms   p95   9.43 ms
+grab_png(compression=0)      median  22.04 ms   p95  24.22 ms
+grab_png(compression=1)      median  38.28 ms   p95  42.04 ms
+grab_png(compression=3)      median 965.14 ms   p95 1153.38 ms
+grab_png(compression=9)      median 4247.21 ms   p95 4511.28 ms
+png size @1: 3895 KiB
+
+[live] window 2560x1440, target=window
+grab() bgra                  median   2.67 ms   p95   7.91 ms
+grab('rgb')                  median   9.03 ms   p95  13.11 ms
+grab_raw()                   median   5.66 ms   p95  10.56 ms
+grab_png(compression=0)      median  22.61 ms   p95  26.99 ms
+grab_png(compression=1)      median  38.46 ms   p95  42.46 ms
+```
+
+`grab_png(compression>=3)` на фотореалистичных кадрах 1440p — это **секунды**: уровни 2–9
+используют обычный deflate, который в 30–100 раз медленнее уровня 1 ради 5–10 % экономии
+размера. Для игр и видео используйте `0` или `1`.
 
 - `grab()` для `bgra`/`rgba` отдаёт буфер readback'а в numpy без второй копии (`rgba` — перестановка каналов на месте). `rgb`/`bgr` выделяют трёхканальную копию.
 - `grab_raw()` стоит одну лишнюю копию: `bytes` не может забрать готовый буфер.
@@ -141,9 +169,9 @@ png size @1: 127 KiB
 ## Проверено на
 
 1. **Браузер (Microsoft Edge, youtube.com, 1249×1364)** — подтверждено: `save_png()` дал PNG без заголовка/рамки, содержимое не чёрное, кадр актуален. `cap.target == "window"`.
-2. **Игра в borderless/windowed** — ожидает ручной проверки.
-3. **Та же игра в exclusive fullscreen** — ожидает ручной проверки.
-4. **Монитор с масштабом 125–150 %** — ожидает ручной проверки (код покрыт тестом, который на 100 % проходит тривиально).
+2. **Игра: GTA V, окно без рамки 2560×1440** — подтверждено: находится по `process="GTA5.exe"` и по заголовку; `cap.target == "window"` (fallback на монитор не понадобился); в кадре живая сцена игры без рамок (виден HUD и счётчик FPS), 0 % чёрных пикселей, альфа везде 255, соседние кадры отличаются (игра анимируется). Бенчмарк выше.
+3. **Та же игра в exclusive fullscreen** — пока не проверено.
+4. **Монитор с масштабом 125–150 %** — пока не проверено (код покрыт тестом, который на 100 % проходит тривиально).
 5. **Жёлтая рамка захвата при `border=False`** — достоверно не проверено.
 
 ## Разработка

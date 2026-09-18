@@ -62,7 +62,7 @@ with gw.WindowCapture(title="Game", mode="live") as cap:
 ### Methods and properties
 
 - `grab(format="bgra")` → `numpy.ndarray`, `uint8`, C-contiguous. Formats: `"bgra"`, `"rgba"` (shape `(h, w, 4)`), `"rgb"`, `"bgr"` (shape `(h, w, 3)`). The array owns its buffer — keep it as long as you like.
-- `grab_png(compression=1)` → `bytes`. RGB PNG, alpha dropped. `0` = stored (fastest, largest), `1` = fast (default), `2–5` = balanced, `6–9` = high.
+- `grab_png(compression=1)` → `bytes`. RGB PNG, alpha dropped. `0` = stored (fastest, largest), `1` = fast (default), `2–5` = balanced, `6–9` = high. Levels ≥ 2 are much slower on photographic content — see Performance.
 - `save_png(path, compression=1)` — `grab_png()` written to a file.
 - `grab_raw()` → `(bytes, width, height)` — tightly packed BGRA.
 - `size` → `(width, height)` of the client area (updates after a resize).
@@ -91,7 +91,9 @@ The Rust core logs through Python's `logging` module (logger `grabwin`, level `D
 
 ## Performance
 
-Measured with `examples/bench.py` on Microsoft Edge (youtube.com), window 1249×1364:
+Measured with `examples/bench.py`.
+
+### Browser: Microsoft Edge (youtube.com), window 1249×1364
 
 ```
 [on_demand] window 1249x1364, target=window
@@ -114,6 +116,32 @@ grab_png(compression=3)      median  16.14 ms   p95  16.47 ms
 grab_png(compression=9)      median  28.26 ms   p95  30.18 ms
 png size @1: 127 KiB
 ```
+
+
+### Game: GTA V, borderless window 2560×1440 (frame 14.7 MB)
+
+```
+[on_demand] window 2560x1440, target=window
+grab() bgra                  median   4.56 ms   p95   6.98 ms
+grab('rgb')                  median   9.67 ms   p95  12.62 ms
+grab_raw()                   median   6.14 ms   p95   9.43 ms
+grab_png(compression=0)      median  22.04 ms   p95  24.22 ms
+grab_png(compression=1)      median  38.28 ms   p95  42.04 ms
+grab_png(compression=3)      median 965.14 ms   p95 1153.38 ms
+grab_png(compression=9)      median 4247.21 ms   p95 4511.28 ms
+png size @1: 3895 KiB
+
+[live] window 2560x1440, target=window
+grab() bgra                  median   2.67 ms   p95   7.91 ms
+grab('rgb')                  median   9.03 ms   p95  13.11 ms
+grab_raw()                   median   5.66 ms   p95  10.56 ms
+grab_png(compression=0)      median  22.61 ms   p95  26.99 ms
+grab_png(compression=1)      median  38.46 ms   p95  42.46 ms
+```
+
+`grab_png(compression>=3)` is **seconds** on photorealistic 1440p frames: levels 2–9 use a
+conventional deflate that is 30–100× slower than level 1 for only 5–10 % smaller files. For
+games and video content stay on `0` or `1`.
 
 - `grab()` for `bgra`/`rgba` hands the readback buffer to numpy without a second copy (`rgba` swaps channels in place). `rgb`/`bgr` allocate a 3-channel copy.
 - `grab_raw()` costs one extra copy: `bytes` cannot take over an existing buffer.
@@ -141,9 +169,9 @@ Run it yourself: `python examples/bench.py --title "Chrome"` (or `--process chro
 ## Verified on
 
 1. **Browser (Microsoft Edge, youtube.com, 1249×1364)** — confirmed: `save_png()` produced a PNG without title bar/frame, content not black, frame current. `cap.target == "window"`.
-2. **A game in borderless/windowed mode** — pending manual check.
-3. **The same game in exclusive fullscreen** — pending manual check.
-4. **Monitor scaled to 125–150 %** — pending manual check (the code path is covered by a test that passes trivially at 100 %).
+2. **Game: GTA V, borderless window 2560×1440** — confirmed: found by `process="GTA5.exe"` and by title; `cap.target == "window"` (no monitor fallback needed); frame is the live game scene without borders (HUD and FPS counter visible), 0 % black pixels, alpha 255 everywhere, consecutive frames differ (the game animates). Benchmark above.
+3. **The same game in exclusive fullscreen** — not tested yet.
+4. **Monitor scaled to 125–150 %** — not tested yet (the code path is covered by a test that passes trivially at 100 %).
 5. **Yellow capture border with `border=False`** — not reliably verified.
 
 ## Development
