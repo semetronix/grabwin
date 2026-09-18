@@ -43,36 +43,40 @@ with sh.WindowCapture(title="Game", mode="live") as cap:
 
 ## Производительность (замерено `examples/bench.py`)
 
-Замер: Microsoft Edge, окно 1249x1364 (страница youtube.com), HEAD `34bb68d`.
+Замер: Microsoft Edge, окно 1249x1364 (страница youtube.com), после коммита
+`perf: avoid a second frame copy in grab()`.
 
 ```
 [on_demand] window 1249x1364, target=window
-grab() bgra                  median   2.50 ms   p95   2.69 ms
-grab('rgb')                  median   3.62 ms   p95   3.80 ms
-grab_raw()                   median   2.49 ms   p95   2.69 ms
-grab_png(compression=0)      median   9.45 ms   p95   9.74 ms
-grab_png(compression=1)      median   4.80 ms   p95   5.27 ms
-grab_png(compression=3)      median  17.11 ms   p95  18.16 ms
-grab_png(compression=9)      median  31.18 ms   p95  34.60 ms
-png size @1: 139 KiB
+grab() bgra                  median   1.29 ms   p95   1.53 ms
+grab('rgb')                  median   3.53 ms   p95   3.69 ms
+grab_raw()                   median   2.45 ms   p95   2.60 ms
+grab_png(compression=0)      median   9.38 ms   p95   9.62 ms
+grab_png(compression=1)      median   4.52 ms   p95   4.67 ms
+grab_png(compression=3)      median  16.45 ms   p95  20.80 ms
+grab_png(compression=9)      median  28.83 ms   p95  31.78 ms
+png size @1: 127 KiB
 
 [live] window 1249x1364, target=window
-grab() bgra                  median   2.29 ms   p95   2.42 ms
-grab('rgb')                  median   3.50 ms   p95   4.36 ms
-grab_raw()                   median   2.30 ms   p95   2.53 ms
-grab_png(compression=0)      median   9.24 ms   p95   9.51 ms
-grab_png(compression=1)      median   4.66 ms   p95   5.82 ms
-grab_png(compression=3)      median  16.67 ms   p95  17.25 ms
-grab_png(compression=9)      median  30.75 ms   p95  31.44 ms
-png size @1: 139 KiB
+grab() bgra                  median   1.11 ms   p95   1.22 ms
+grab('rgb')                  median   3.44 ms   p95   3.62 ms
+grab_raw()                   median   2.29 ms   p95   2.40 ms
+grab_png(compression=0)      median   9.11 ms   p95   9.42 ms
+grab_png(compression=1)      median   4.49 ms   p95   4.99 ms
+grab_png(compression=3)      median  16.14 ms   p95  16.47 ms
+grab_png(compression=9)      median  28.26 ms   p95  30.18 ms
+png size @1: 127 KiB
 ```
 
 Цели из спеки (§5) при ~1080p: `grab()` on_demand ≤ 5 мс, live ≤ 2 мс, `grab_png(1)` ≤ 25 мс.
 
-- `grab()` on_demand (2.50 мс) и `grab_png(1)` (4.80 мс on_demand / 4.66 мс live) — цели выполнены с запасом.
-- `grab()` live (2.29 мс median) **немного превышает** цель в 2 мс — известное отклонение на этом
-  железе/разрешении, не блокер. Основную стоимость даёт копирование BGRA-буфера (~9.4 МБ на кадр
-  при 1249x1364), а не сам readback.
+- `grab()` on_demand (1.29 мс), live (1.11 мс) и `grab_png(1)` (4.52 мс on_demand / 4.49 мс live) —
+  все цели выполнены с запасом.
+- `grab()` для `bgra`/`rgba` отдаёт буфер readback'а в numpy без второй копии (`rgba` —
+  перестановка каналов на месте); до этого `grab()` стоил столько же, сколько `grab_raw()`
+  (2.50 / 2.29 мс), где вторая копия ~9.4 МБ неизбежна из-за `bytes`.
+- `grab_raw()` (2.45 / 2.29 мс) остаётся на уровне «readback + копия в `bytes`»: `PyBytes`
+  не может принять готовый `Vec<u8>` без копирования.
 
 ## Архитектура и особенности реализации
 

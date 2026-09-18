@@ -38,8 +38,25 @@ pub struct Frame {
 }
 
 impl Frame {
-    pub fn to_format(&self, fmt: PixelFormat) -> Vec<u8> {
-        convert(&self.bgra, fmt)
+    /// Consumes the frame and returns its pixels in `fmt`. `Bgra` hands back the buffer as is and
+    /// `Rgba` swizzles it in place, so the two 4-channel formats cost no extra copy; only the
+    /// 3-channel formats allocate. This is what `grab()` uses, so the hot path copies a frame once.
+    pub fn into_format(self, fmt: PixelFormat) -> Vec<u8> {
+        match fmt {
+            PixelFormat::Bgra => self.bgra,
+            PixelFormat::Rgba => {
+                let mut out = self.bgra;
+                swap_r_b(&mut out);
+                out
+            }
+            PixelFormat::Rgb | PixelFormat::Bgr => convert(&self.bgra, fmt),
+        }
+    }
+}
+
+fn swap_r_b(bgra: &mut [u8]) {
+    for px in bgra.chunks_exact_mut(4) {
+        px.swap(0, 2);
     }
 }
 
@@ -63,9 +80,7 @@ pub fn convert(bgra: &[u8], fmt: PixelFormat) -> Vec<u8> {
         PixelFormat::Bgra => bgra.to_vec(),
         PixelFormat::Rgba => {
             let mut out = bgra.to_vec();
-            for px in out.chunks_exact_mut(4) {
-                px.swap(0, 2);
-            }
+            swap_r_b(&mut out);
             out
         }
         PixelFormat::Rgb => {
@@ -145,13 +160,45 @@ mod tests {
         assert_eq!(unpack_rows(&src, 4, 1, 2), src.to_vec());
     }
 
-    #[test]
-    fn frame_to_format() {
-        let f = Frame {
+    fn frame() -> Frame {
+        Frame {
             bgra: BGRA.to_vec(),
             width: 2,
             height: 1,
-        };
-        assert_eq!(f.to_format(PixelFormat::Rgb), vec![3, 2, 1, 7, 6, 5]);
+        }
+    }
+
+    #[test]
+    fn into_format_bgra_returns_buffer_unchanged() {
+        let f = frame();
+        let ptr = f.bgra.as_ptr();
+        let out = f.into_format(PixelFormat::Bgra);
+        assert_eq!(out, BGRA.to_vec());
+        assert_eq!(out.as_ptr(), ptr, "bgra must not be copied");
+    }
+
+    #[test]
+    fn into_format_rgba_swaps_in_place() {
+        let f = frame();
+        let ptr = f.bgra.as_ptr();
+        let out = f.into_format(PixelFormat::Rgba);
+        assert_eq!(out, vec![3, 2, 1, 4, 7, 6, 5, 8]);
+        assert_eq!(out.as_ptr(), ptr, "rgba must be swizzled in place");
+    }
+
+    #[test]
+    fn into_format_rgb_drops_alpha_and_swaps() {
+        assert_eq!(
+            frame().into_format(PixelFormat::Rgb),
+            vec![3, 2, 1, 7, 6, 5]
+        );
+    }
+
+    #[test]
+    fn into_format_bgr_drops_alpha() {
+        assert_eq!(
+            frame().into_format(PixelFormat::Bgr),
+            vec![1, 2, 3, 5, 6, 7]
+        );
     }
 }

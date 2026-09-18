@@ -187,7 +187,8 @@ impl WindowCapture {
         let fmt = PixelFormat::parse(format)?;
         let (data, w, h) = py.detach(|| -> Result<(Vec<u8>, u32, u32)> {
             let frame = self.with_capture(|c| c.grab_bgra())?;
-            Ok((frame.to_format(fmt), frame.width, frame.height))
+            let (w, h) = (frame.width, frame.height);
+            Ok((frame.into_format(fmt), w, h))
         })?;
         let arr = data
             .into_pyarray(py)
