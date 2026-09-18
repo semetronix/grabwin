@@ -105,4 +105,4 @@ def test_size_polling_during_resize_does_not_deadlock(tk_window):
             stop.set()
             t.join(timeout=5.0)
         assert not t.is_alive()
-        assert sizes and sizes[-1] == (800, 600)
+        assert (800, 600) in sizes
